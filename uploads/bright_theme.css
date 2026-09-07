@@ -1,0 +1,98 @@
+/* GLOBAL BRIGHT THEME OVERRIDES */
+/* Forces all dark elements into a crisp, understandable, Emerald Green light theme */
+
+body, html {
+    background: #f8fafc !important; /* Soft light gray background */
+    color: #1e293b !important; /* High contrast dark gray text */
+    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif !important;
+}
+
+/* CARDS & CONTAINERS */
+.card, .container .card, .device-card, .gateway-card, .header, .filters, .alarm-card, .sidebar, .panel, .editor-panel {
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05) !important;
+    color: #334155 !important;
+}
+
+/* TYPOGRAPHY OVERRIDES */
+h1, h2, h3, h4, h5, h6, strong {
+    color: #0f172a !important;
+}
+
+
+
+/* LINKS AND BUTTONS */
+.card a {
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #0f172a !important;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.02) !important;
+    transition: all 0.2s ease !important;
+}
+
+.card a:hover {
+    background: #f1f5f9 !important;
+    border-color: #10b981 !important; /* Emerald Green Hover */
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 12px rgba(16, 185, 129, 0.15) !important;
+}
+
+.primary-btn {
+    background: #10b981 !important; /* Emerald Primary */
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 10px 16px !important;
+    font-weight: 600 !important;
+    box-shadow: 0 4px 10px rgba(16, 185, 129, 0.3) !important;
+    transition: all 0.2s ease !important;
+}
+
+.primary-btn:hover {
+    background: #059669 !important;
+    box-shadow: 0 6px 15px rgba(16, 185, 129, 0.4) !important;
+}
+
+/* SPECIFIC HIGHLIGHTS & LOGOS */
+.logo {
+    background: linear-gradient(135deg, #10b981, #34d399) !important; /* Emerald Gradient */
+    color: white !important;
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3) !important;
+}
+
+/* INPUTS, SELECTS, & TABLES */
+input, select, textarea {
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #1e293b !important;
+    border-radius: 8px !important;
+}
+
+input:focus, select:focus, textarea:focus {
+    border-color: #10b981 !important;
+    outline: none !important;
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2) !important;
+}
+
+table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+    background: white !important;
+}
+
+th {
+    background: #f1f5f9 !important;
+    color: #475569 !important;
+    border-bottom: 2px solid #cbd5e1 !important;
+}
+
+td {
+    border-bottom: 1px solid #e2e8f0 !important;
+    color: #334155 !important;
+}
+
+/* STATUS COLORS (Force bright readable variants) */
+.status-online, .badge-success { background: #d1fae5 !important; color: #065f46 !important; border: 1px solid #34d399 !important; }
+.status-offline, .badge-danger { background: #fee2e2 !important; color: #991b1b !important; border: 1px solid #f87171 !important; }
+.status-warning, .badge-warning { background: #fef3c7 !important; color: #92400e !important; border: 1px solid #fbbf24 !important; }

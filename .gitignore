@@ -1,0 +1,30 @@
+# Environment
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Database
+*.db
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Uploads (keep directory structure)
+uploads/*.png
+uploads/*.jpg
+uploads/*.jpeg
+!uploads/*.js
+!uploads/*.css
+!uploads/*.json
+
+# Temporary scripts
+inject_*.py
+build_watchdog.py
+refactor_script.py
