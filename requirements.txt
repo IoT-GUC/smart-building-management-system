@@ -1,12 +1,15 @@
 fastapi
-uvicorn
+uvicorn[standard]
 requests
 python-dotenv
 pydantic
+pydantic-settings
 pillow
 python-multipart
 websockets
-pydantic-settings
 httpx
+jinja2
 pytest
+pytest-anyio
 ruff
+anyio[trio]

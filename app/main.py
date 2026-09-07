@@ -37,9 +37,15 @@ load_dotenv()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.db.connection import run_migrations
+    run_migrations()
     task = asyncio.create_task(offline_watchdog())
     yield
     task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 app = FastAPI(title='LILYGO Provisioning Server', lifespan=lifespan)
 templates = Jinja2Templates(directory='templates')
@@ -50,6 +56,8 @@ DB = settings.DB_FILE
 UPLOAD_DIR = 'uploads'
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount('/uploads', StaticFiles(directory=UPLOAD_DIR), name='uploads')
+if os.path.isdir('static'):
+    app.mount('/static', StaticFiles(directory='static'), name='static')
 TTN_BASE = os.getenv('TTN_BASE_URL', '').rstrip('/')
 APP_ID = os.getenv('TTN_APP_ID', '')
 API_KEY = os.getenv('TTN_API_KEY', '')
@@ -70,7 +78,7 @@ ALERT_EMAIL_PASSWORD = os.getenv('ALERT_EMAIL_PASSWORD', '')
 ALERT_EMAIL_TO = os.getenv('ALERT_EMAIL_TO', '')
 SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
 SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', ALERT_EMAIL_PASSWORD)
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'change-me')
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@system.local').strip().lower()
 SESSION_TTL_SECONDS = int(os.getenv('SESSION_TTL_SECONDS', '28800'))
 PASSWORD_PBKDF2_ITERATIONS = int(os.getenv('PASSWORD_PBKDF2_ITERATIONS',

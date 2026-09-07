@@ -532,13 +532,48 @@ def up(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS "devices"(
                     chip_mac TEXT PRIMARY KEY,
-                    device_id TEXT,
-                    dev_eui TEXT,
+                    device_id TEXT UNIQUE,
+                    dev_eui TEXT UNIQUE,
                     join_eui TEXT,
                     app_key TEXT,
                     node_type TEXT,
+
+                    -- Canonical FK-based location (preferred)
                     room_id INTEGER,
+                    client_id INTEGER,
+                    site_id INTEGER,
+                    building_id INTEGER,
+                    floor_id INTEGER,
+
+                    -- Denormalised strings kept for legacy compatibility
+                    building TEXT,
+                    floor TEXT,
+                    room TEXT,
+
+                    -- Display metadata
                     label TEXT,
+                    x INTEGER,
+                    y INTEGER,
+                    icon_type TEXT,
+
+                    -- Profile assignment
+                    profile_id INTEGER,
+                    profile_code TEXT,
+                    profile_version INTEGER,
+
+                    -- Payload contract
+                    payload_version INTEGER,
+                    firmware_version TEXT,
+
+                    -- Configuration tracking
+                    configuration_status TEXT DEFAULT 'pending',
+                    configuration_error TEXT,
+                    configuration_updated_at TEXT,
+                    configuration_checksum TEXT,
+
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+
                     FOREIGN KEY (room_id) REFERENCES rooms(id)
                 )
     """)

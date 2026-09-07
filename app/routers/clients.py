@@ -475,6 +475,12 @@ def delete_user(user_id: int):
         WHERE user_id = ?
     """, (user_id,))
 
+    # Revoke all active sessions so the deleted user cannot continue using existing tokens
+    conn.execute("""
+        DELETE FROM auth_sessions
+        WHERE user_id = ?
+    """, (user_id,))
+
     conn.execute("""
         DELETE FROM users
         WHERE id = ?

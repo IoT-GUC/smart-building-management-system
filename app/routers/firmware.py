@@ -9,7 +9,9 @@ import sqlite3
 import csv
 import io
 import re
+import zipfile
 from app.main import *
+
 router = APIRouter()
 
 @router.get("/firmware-modules")
@@ -479,8 +481,14 @@ def delete_firmware_module_api(
         conn.close()
 @router.get("/api/firmware/generate-sensor-template")
 def generate_sensor_template(name: str):
-    if not name or not name.isalnum():
-        raise HTTPException(status_code=400, detail="Invalid sensor name. Use alphanumeric characters only.")
+    if not name or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,63}', name):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid sensor name. Use a C identifier: start with a letter or "
+                "underscore, followed by letters, digits, or underscores (max 64 chars)."
+            ),
+        )
 
     h_content = f'''#ifndef {name.upper()}_SENSOR_MODULE_H
 #define {name.upper()}_SENSOR_MODULE_H

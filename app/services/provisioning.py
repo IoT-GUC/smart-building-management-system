@@ -5,7 +5,7 @@ import sqlite3
 import json
 from fastapi import HTTPException
 from app.config import settings
-from app.routers.api import Device
+from app.schemas.core import Device
 
 
 def validate_provision_location_and_type(conn: sqlite3.Connection, device: Device):
