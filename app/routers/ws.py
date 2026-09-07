@@ -1,5 +1,6 @@
+import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from ws_manager import manager
+from app.services.websockets import manager
 
 router = APIRouter()
 
@@ -8,7 +9,14 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Keep connection alive, wait for client messages if any
             data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                if msg.get("type") == "subscribe":
+                    client_id = msg.get("client_id")
+                    site_id = msg.get("site_id")
+                    manager.set_scope(websocket, client_id=client_id, site_id=site_id)
+            except Exception:
+                pass
     except WebSocketDisconnect:
         manager.disconnect(websocket)

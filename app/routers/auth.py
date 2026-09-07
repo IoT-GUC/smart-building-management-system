@@ -107,6 +107,7 @@ def auth_login(data: dict, request: Request):
         value=raw_token,
         httponly=True,
         samesite="lax",
+        secure=getattr(settings, "COOKIE_SECURE", False),
         max_age=SESSION_TTL_SECONDS
     )
 

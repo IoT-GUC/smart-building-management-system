@@ -35,4 +35,4 @@ echo "NOTE: Ensure your Linux firewall (ufw or iptables) allows traffic on port 
 echo "e.g. 'sudo ufw allow 8000'"
 echo ""
 
-./venv/bin/uvicorn maintestfinal2:app --host 0.0.0.0 --port 8000 --reload
+./venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

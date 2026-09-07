@@ -1,13 +1,7 @@
 def up(conn):
-    conn.execute("""
-        CREATE TABLE schema_migrations (
-                    version TEXT PRIMARY KEY,
-                    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-    """)
 
     conn.execute("""
-        CREATE TABLE profile_alarm_runtime_state(
+        CREATE TABLE IF NOT EXISTS profile_alarm_runtime_state(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                 
                             device_id TEXT NOT NULL,
@@ -49,7 +43,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE sensor_catalog(
+        CREATE TABLE IF NOT EXISTS sensor_catalog(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             sensor_code TEXT NOT NULL UNIQUE,
                             manufacturer TEXT,
@@ -67,7 +61,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE firmware_modules(
+        CREATE TABLE IF NOT EXISTS firmware_modules(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             module_key TEXT NOT NULL UNIQUE,
                             display_name TEXT NOT NULL,
@@ -86,7 +80,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE sensor_profiles(
+        CREATE TABLE IF NOT EXISTS sensor_profiles(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             profile_code TEXT NOT NULL UNIQUE,
                             profile_name TEXT NOT NULL,
@@ -124,7 +118,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE sensor_profile_sensors(
+        CREATE TABLE IF NOT EXISTS sensor_profile_sensors(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             profile_id INTEGER NOT NULL,
                             sensor_id INTEGER NOT NULL,
@@ -152,7 +146,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE sensor_profile_fields(
+        CREATE TABLE IF NOT EXISTS sensor_profile_fields(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             profile_id INTEGER NOT NULL,
                 
@@ -193,7 +187,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE sensor_profile_rules(
+        CREATE TABLE IF NOT EXISTS sensor_profile_rules(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             profile_id INTEGER NOT NULL,
                 
@@ -227,7 +221,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE sensor_profile_versions(
+        CREATE TABLE IF NOT EXISTS sensor_profile_versions(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             profile_id INTEGER NOT NULL,
                             version INTEGER NOT NULL,
@@ -246,7 +240,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE profile_firmware_compatibility(
+        CREATE TABLE IF NOT EXISTS profile_firmware_compatibility(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             profile_id INTEGER NOT NULL,
                             firmware_module_id INTEGER NOT NULL,
@@ -269,7 +263,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE device_configuration_history(
+        CREATE TABLE IF NOT EXISTS device_configuration_history(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                 
                             device_id TEXT NOT NULL,
@@ -295,7 +289,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE sensor_profile_test_runs(
+        CREATE TABLE IF NOT EXISTS sensor_profile_test_runs(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             profile_id INTEGER NOT NULL,
                 
@@ -317,7 +311,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE device_capabilities(
+        CREATE TABLE IF NOT EXISTS device_capabilities(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             device_id TEXT NOT NULL,
                             capability TEXT NOT NULL,
@@ -327,19 +321,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE site_maps(
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            site_id INTEGER NOT NULL,
-                            image_path TEXT,
-                            image_width INTEGER,
-                            image_height INTEGER,
-                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            FOREIGN KEY (site_id) REFERENCES sites(id)
-                        )
-    """)
-
-    conn.execute("""
-        CREATE TABLE clients(
+        CREATE TABLE IF NOT EXISTS clients(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             name TEXT NOT NULL UNIQUE,
                             tb_customer_id TEXT,
@@ -348,7 +330,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE sites(
+        CREATE TABLE IF NOT EXISTS sites(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             client_id INTEGER NOT NULL,
                             name TEXT NOT NULL,
@@ -361,7 +343,19 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE gateways(
+        CREATE TABLE IF NOT EXISTS site_maps(
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            site_id INTEGER NOT NULL,
+                            image_path TEXT,
+                            image_width INTEGER,
+                            image_height INTEGER,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (site_id) REFERENCES sites(id)
+                        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS gateways(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             gateway_id TEXT UNIQUE NOT NULL,
                             name TEXT NOT NULL,
@@ -376,7 +370,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE buildings(
+        CREATE TABLE IF NOT EXISTS buildings(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             site_id INTEGER NOT NULL,
                             name TEXT NOT NULL,
@@ -389,7 +383,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE floors(
+        CREATE TABLE IF NOT EXISTS floors(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             building_id INTEGER NOT NULL,
                             name TEXT NOT NULL,
@@ -403,7 +397,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE users(
+        CREATE TABLE IF NOT EXISTS users(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             name TEXT NOT NULL,
                             email TEXT NOT NULL UNIQUE,
@@ -414,7 +408,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE user_access(
+        CREATE TABLE IF NOT EXISTS user_access(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             user_id INTEGER NOT NULL,
                             client_id INTEGER,
@@ -437,7 +431,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE auth_sessions(
+        CREATE TABLE IF NOT EXISTS auth_sessions(
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id INTEGER NOT NULL,
                         token_hash TEXT NOT NULL UNIQUE,
@@ -451,7 +445,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE device_latest_telemetry(
+        CREATE TABLE IF NOT EXISTS device_latest_telemetry(
                             device_id TEXT PRIMARY KEY,
                             telemetry TEXT,
                             alarm_active INTEGER DEFAULT 0,
@@ -461,7 +455,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE historical_telemetry(
+        CREATE TABLE IF NOT EXISTS historical_telemetry(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             device_id TEXT,
                             telemetry TEXT,
@@ -470,7 +464,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE audit_log(
+        CREATE TABLE IF NOT EXISTS audit_log(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             actor TEXT DEFAULT 'admin',
                             action TEXT NOT NULL,
@@ -482,7 +476,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE alarm_recipients(
+        CREATE TABLE IF NOT EXISTS alarm_recipients(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             email TEXT NOT NULL UNIQUE,
                             enabled INTEGER DEFAULT 1,
@@ -491,7 +485,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE alarm_history(
+        CREATE TABLE IF NOT EXISTS alarm_history(
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             device_id TEXT NOT NULL,
                             node_type TEXT,
@@ -514,7 +508,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE alarm_email_template(
+        CREATE TABLE IF NOT EXISTS alarm_email_template(
                             id INTEGER PRIMARY KEY CHECK (id = 1),
                             subject_template TEXT NOT NULL,
                             body_template TEXT NOT NULL,
@@ -523,7 +517,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE "rooms"(
+        CREATE TABLE IF NOT EXISTS "rooms"(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     floor_id INTEGER NOT NULL,
                     room_name TEXT NOT NULL,
@@ -536,7 +530,7 @@ def up(conn):
     """)
 
     conn.execute("""
-        CREATE TABLE "devices"(
+        CREATE TABLE IF NOT EXISTS "devices"(
                     chip_mac TEXT PRIMARY KEY,
                     device_id TEXT,
                     dev_eui TEXT,

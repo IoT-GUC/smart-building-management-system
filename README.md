@@ -1,68 +1,66 @@
 # Smart Building Management System
 
-A full-featured IoT platform for monitoring and managing smart buildings with LoRaWAN sensors, real-time dashboards, and automated alerting.
+FastAPI-based smart-building platform for LoRaWAN provisioning, telemetry,
+floor maps, alarms, gateways, client access and firmware tooling.
 
-## Features
-- Real-time sensor monitoring with interactive floor maps
-- LoRaWAN integration via The Things Network (TTN)
-- ThingsBoard cloud sync (optional)
-- Multi-tenant client portal with role-based access
-- Automated alarm system with email notifications
-- Device telemetry history with interactive charts
-- CSV data export for analytics
-- Bulk device provisioning via CSV upload
-- Offline device watchdog (24h inactivity detection)
-- Progressive Web App (PWA) — installable on mobile
-- Firmware template generator for adding new sensors
-- Real-time WebSocket toast notifications
-- Contextual help system and guided onboarding tour
-- Global spotlight search (Ctrl+K)
+## Requirements
 
-## Architecture
-The platform is built on a FastAPI backend, utilizing a SQLite database for persistent storage. The API is structured via multiple routers including `api.py` (REST endpoints), `pages.py` (HTML views), `auth.py` (authentication), `ws.py` (WebSockets via `ws_manager.py`), and `webhooks.py` (for handling TTN data). Static files, including uploaded assets, themes, and client-side scripts, are served from the `uploads/` directory.
-
-## Prerequisites
-- Python 3.8+
+- Python **3.10+**
 - pip
 
-## Installation
+## Install and run
+
 ### Windows
-.\install.ps1 then .\run.bat
+
+```powershell
+.\windows\install.ps1
+.\windows\run.bat
+```
+
 ### Linux
-sudo ./install.sh then ./run.sh
+
+```bash
+bash linux/install.sh
+bash linux/run.sh
+```
+
+Direct entry point:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
 
 ## Configuration
-Copy .env.example to .env and fill in your credentials.
-- `TTN_BASE_URL`, `TTN_APP_ID`, `TTN_API_KEY`: Integrates the system with The Things Network.
-- `SMTP_SERVER`, `SMTP_PORT`, `ALERT_EMAIL_FROM`: Configures email notifications.
-- `ADMIN_PASSWORD`: Default password for the admin account.
 
-## Usage
-### Admin Portal (/admin)
-Log in to the Admin Portal to manage the building hierarchy (Sites, Buildings, Floors, Rooms), configure gateways, set up alarm templates, and manage user roles. From here, admins can provision devices and map them to physical locations on uploaded floorplans.
+Copy `.env.example` to `.env` and edit it for your environment.
 
-### Client Portal (/client)
-Clients can access a restricted dashboard to view live telemetry, alarms, and history for the specific buildings or sites they have been granted access to.
+The active names include `DB_FILE`, TTN settings, `TB_USERNAME`, `TB_PASSWORD`,
+`ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`,
+`COOKIE_SECURE`, and `LOCAL_TEST_MODE`.
 
-### Default Credentials
-Set in .env file
+## Portals
 
-## Adding a New Sensor
-1. Navigate to **Provision Options** -> **Provision Devices**.
-2. Select the Floor and Room where the sensor will be installed.
-3. Assign a **Sensor Profile** (this tells the system how to decode the sensor's payload).
-4. Enter the Device EUI.
-5. Upon successful provision via TTN, you can use the **Floor Editor** to place the sensor icon visually on the map.
-*(Refer to the included `How_to_Add_a_New_Sensor_Simple_Guide.docx` for more detailed hardware steps).*
+- Admin: `/admin`
+- Client: `/client-portal`
+- API docs: `/docs`
 
-## API Documentation
-Swagger UI available at /docs
+## Database
 
-## PWA Installation
-The application includes a `manifest.json` and a Service Worker, making it an installable Progressive Web App (PWA). Simply navigate to the site on a mobile browser or Chrome on desktop, and select the option to "Add to Home Screen" or "Install App".
+SQLite is the default. Startup bootstraps the current compatibility schema and
+then runs tracked non-destructive migrations in `app/db/migrations/`.
 
-## Project Structure
-- `maintestfinal2.py`: Application entry point.
-- `routers/`: Contains `api.py`, `pages.py`, `auth.py`, `ws.py`, `webhooks.py`.
-- `uploads/`: Stores static assets, custom CSS themes (`bright_theme.css`), client scripts, `manifest.json`, and the `service-worker.js`.
-- `README.md`: Project documentation.
+The project is migrating incrementally to the canonical hierarchy:
+
+`Client -> Site -> Building -> Floor -> Room -> Device`
+
+Legacy location columns/tables are intentionally retained until all routes use
+relational joins and migration tests pass against a copy of real data.
+
+## Verification
+
+```bash
+python -m compileall -q app
+python tools/verify_repo.py
+pytest -q
+ruff check app tests
+```

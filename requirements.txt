@@ -6,3 +6,7 @@ pydantic
 pillow
 python-multipart
 websockets
+pydantic-settings
+httpx
+pytest
+ruff

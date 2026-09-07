@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Node Placement Editor</title>
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#08111f">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+
+<style>
+body{
+    margin:0;
+    font-family:Arial, sans-serif;
+    background:#0f172a;
+    color:#e5e7eb;
+}
+
+.header{
+    padding:24px 34px;
+    background:#111827;
+    border-bottom:1px solid #334155;
+}
+
+.header h1{
+    margin:0;
+    font-size:28px;
+    color:#f8fafc;
+}
+
+.header p{
+    margin:8px 0 0;
+    color:#94a3b8;
+}
+
+.toolbar{
+    padding:16px 34px;
+    background:#0f172a;
+    border-bottom:1px solid #1e293b;
+    display:flex;
+    gap:12px;
+    align-items:center;
+    flex-wrap:wrap;
+}
+
+.toolbar label{
+    color:#cbd5e1;
+    font-weight:bold;
+}
+
+.toolbar input,
+.toolbar button{
+    width:auto;
+    padding:10px 13px;
+    border-radius:8px;
+    border:1px solid #334155;
+    font-size:14px;
+}
+
+.toolbar input{
+    background:#020617;
+    color:white;
+}
+
+.toolbar button{
+    border:none;
+    cursor:pointer;
+    font-weight:bold;
+    color:white;
+    background:#2563eb;
+}
+
+.toolbar button:hover{
+    background:#1d4ed8;
+}
+
+.adminHomeBtn{
+    background:#334155 !important;
+}
+
+.adminHomeBtn:hover{
+    background:#475569 !important;
+}
+
+.layout{
+    display:flex;
+    height:calc(100vh - 152px);
+}
+
+.mapArea{
+    flex:1;
+    position:relative;
+    overflow:auto;
+    padding:24px 34px;
+}
+
+.canvasBox{
+    position:relative;
+    width:calc(100vw - 430px);
+    background:#111827;
+    border:1px solid #334155;
+    border-radius:16px;
+    padding:14px;
+    box-shadow:0 16px 40px rgba(0,0,0,0.35);
+}
+
+#floorImage{
+    width:100%;
+    height:auto;
+    display:block;
+    border:1px solid #334155;
+    border-radius:12px;
+    background:#020617;
+    opacity:0.92;
+}
+
+#overlay{
+    position:absolute;
+    top:14px;
+    left:14px;
+    width:calc(100% - 28px);
+    height:calc(100% - 28px);
+}
+
+#nodesLayer{
+    position:absolute;
+    top:14px;
+    left:14px;
+    width:calc(100% - 28px);
+    height:calc(100% - 28px);
+}
+
+.roomPolygon{
+    fill:rgba(37,99,235,0.18);
+    stroke:#60a5fa;
+    stroke-width:3;
+}
+
+.roomLabel{
+    fill:#93c5fd;
+    font-size:15px;
+    font-weight:bold;
+    paint-order:stroke;
+    stroke:#020617;
+    stroke-width:3px;
+}
+
+.node{
+    position:absolute;
+    transform:translate(-50%, -50%);
+    padding:8px 12px;
+    border-radius:999px;
+    background:#16a34a;
+    color:white;
+    font-weight:bold;
+    font-size:12px;
+    cursor:grab;
+    z-index:20;
+    white-space:nowrap;
+    box-shadow:0 8px 20px rgba(0,0,0,.45);
+    border:1px solid rgba(255,255,255,0.25);
+}
+
+.node.selected{
+    outline:4px solid #f59e0b;
+}
+
+.sidePanel{
+    width:330px;
+    background:#111827;
+    border-left:1px solid #334155;
+    padding:18px;
+    overflow:auto;
+    box-shadow:-8px 0 24px rgba(0,0,0,0.25);
+}
+
+.sidePanel h2{
+    margin-top:0;
+    color:#f8fafc;
+}
+
+.sidePanel h3{
+    color:#93c5fd;
+}
+
+.deviceItem{
+    padding:10px;
+    border-radius:8px;
+    background:#020617;
+    border:1px solid #334155;
+    margin-bottom:8px;
+    cursor:pointer;
+    color:#e5e7eb;
+}
+
+.deviceItem:hover{
+    background:#1e293b;
+}
+
+.deviceItem.active{
+    background:#78350f;
+    border-color:#f59e0b;
+    font-weight:bold;
+}
+
+.sidePanel label{
+    color:#cbd5e1;
+    font-size:14px;
+    font-weight:bold;
+}
+
+.sidePanel input,
+.sidePanel select,
+.sidePanel button{
+    width:100%;
+    box-sizing:border-box;
+    padding:10px;
+    margin-top:8px;
+    margin-bottom:10px;
+    border-radius:8px;
+}
+
+.sidePanel input,
+.sidePanel select{
+    border:1px solid #334155;
+    background:#020617;
+    color:white;
+}
+
+.sidePanel button{
+    border:none;
+    background:#2563eb;
+    color:white;
+    font-weight:bold;
+    cursor:pointer;
+}
+
+.sidePanel button:hover{
+    background:#1d4ed8;
+}
+
+.saveBtn{
+    background:#16a34a !important;
+}
+
+.saveBtn:hover{
+    background:#15803d !important;
+}
+
+.resetBtn{
+    background:#64748b !important;
+}
+
+.resetBtn:hover{
+    background:#475569 !important;
+}
+
+.hint{
+    font-size:12px;
+    color:#94a3b8;
+    line-height:1.5;
+}
+
+hr{
+    border:none;
+    border-top:1px solid #334155;
+    margin:16px 0;
+}
+</style>
+<link rel="stylesheet" href="/static/bright_theme.css">
+</head>
+
+<body>
+
+<div class="header">
+    <h1>Node Placement Editor</h1>
+    <p>Drag devices on the floor map, assign them to rooms, and save their final positions.</p>
+</div>
+
+<div class="toolbar">
+    <button class="adminHomeBtn" onclick="window.location.href='/admin'">
+        ← Admin Home
+    </button>
+
+    <label>Floor:</label>
+    <select id="floorId" onchange="loadFloor()"></select>
+</div>
+<div class="layout">
+
+    <div class="mapArea">
+        <div class="canvasBox" id="canvasBox">
+            <img id="floorImage">
+            <svg id="overlay"></svg>
+            <div id="nodesLayer"></div>
+        </div>
+    </div>
+
+    <div class="sidePanel">
+        <h2>Node Placement</h2>
+
+        <h3>Devices</h3>
+        <div id="deviceList"></div>
+
+        <hr>
+
+        <label>Selected Device</label>
+        <input id="selectedDeviceName" readonly>
+
+        <label>Assign To Room</label>
+        <select id="roomSelect"></select>
+
+        <button onclick="assignToRoom()">Assign To Room Center</button>
+        <button class="saveBtn" onclick="savePosition()">Save Current Position</button>
+        <button class="resetBtn" onclick="resetToRoomCenter()">Reset To Room Center</button>
+
+        <p class="hint">
+            Drag node on the map, then press Save Current Position.
+            If no position exists, node appears at room center.
+        </p>
+    </div>
+
+</div>
+
+<script>
+let floorData = null;
+let selectedDevice = null;
+let selectedNodeEl = null;
+let dragging = false;
+let dragDevice = null;
+
+const image = document.getElementById("floorImage");
+const overlay = document.getElementById("overlay");
+const nodesLayer = document.getElementById("nodesLayer");
+
+function iconFor(type){
+    if(type === "environment") return "🌡";
+    if(type === "occupancy") return "👤";
+    if(type === "safety") return "🔥";
+    if(type === "energy") return "⚡";
+    return "📡";
+}
+
+function originalToDisplay(p){
+    return {
+        x: p.x * image.clientWidth / floorData.floor.image_width,
+        y: p.y * image.clientHeight / floorData.floor.image_height
+    };
+}
+
+function displayToOriginal(x, y){
+    return {
+        x: Math.round(x * floorData.floor.image_width / image.clientWidth),
+        y: Math.round(y * floorData.floor.image_height / image.clientHeight)
+    };
+}
+
+async function loadFloor(){
+    const floorId = document.getElementById("floorId").value;
+
+    if (!floorId) {
+        return;
+    }
+
+    selectedDevice = null;
+    selectedNodeEl = null;
+    dragDevice = null;
+
+    document.getElementById("selectedDeviceName").value = "";
+    document.getElementById("deviceList").innerHTML = "";
+    document.getElementById("roomSelect").innerHTML = "";
+    nodesLayer.innerHTML = "";
+    overlay.innerHTML = "";
+
+    const res = await fetch(`/floors/${floorId}/live`);
+    floorData = await res.json();
+
+    image.src = floorData.floor.image_path;
+
+    image.onload = function(){
+        overlay.setAttribute("width", image.clientWidth);
+        overlay.setAttribute("height", image.clientHeight);
+
+        drawRooms();
+        drawNodes();
+        renderDeviceList();
+        renderRoomSelect();
+    };
+
+    if(image.complete){
+        drawRooms();
+        drawNodes();
+        renderDeviceList();
+        renderRoomSelect();
+    }
+}
+
+function allDevices(){
+    let devices = [];
+
+    floorData.rooms.forEach(room => {
+        room.devices.forEach(device => {
+            device._room = room;
+            devices.push(device);
+        });
+    });
+
+    return devices;
+}
+
+function drawRooms(){
+    overlay.innerHTML = "";
+
+    floorData.rooms.forEach(room => {
+        if(!room.polygon_points || room.polygon_points.length < 3) return;
+
+        const pts = room.polygon_points.map(originalToDisplay);
+
+        const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        poly.setAttribute("points", pts.map(p => `${p.x},${p.y}`).join(" "));
+        poly.setAttribute("class", "roomPolygon");
+        overlay.appendChild(poly);
+
+        const center = originalToDisplay({x: room.x, y: room.y});
+
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        label.setAttribute("x", center.x);
+        label.setAttribute("y", center.y);
+        label.setAttribute("class", "roomLabel");
+        label.textContent = room.room_name;
+        overlay.appendChild(label);
+    });
+}
+
+function drawNodes(){
+    nodesLayer.innerHTML = "";
+
+    allDevices().forEach(device => {
+        const node = document.createElement("div");
+
+        const room = device._room;
+
+        const px = device.x || room.x;
+        const py = device.y || room.y;
+
+        const pos = originalToDisplay({x:px, y:py});
+
+        node.className = "node";
+        node.style.left = pos.x + "px";
+        node.style.top = pos.y + "px";
+
+        node.innerText =
+            iconFor(device.node_type) + " " + (device.label || device.device_id);
+
+        node.onmousedown = function(e){
+            e.preventDefault();
+            selectDevice(device, node);
+            dragging = true;
+            dragDevice = device;
+            node.style.cursor = "grabbing";
+        };
+
+        node.onclick = function(e){
+            e.stopPropagation();
+            selectDevice(device, node);
+        };
+
+        nodesLayer.appendChild(node);
+    });
+}
+
+document.addEventListener("mousemove", function(e){
+    if(!dragging || !dragDevice || !selectedNodeEl) return;
+
+    const rect = nodesLayer.getBoundingClientRect();
+
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    selectedNodeEl.style.left = x + "px";
+    selectedNodeEl.style.top = y + "px";
+
+    const original = displayToOriginal(x, y);
+
+    dragDevice.x = original.x;
+    dragDevice.y = original.y;
+});
+
+document.addEventListener("mouseup", function(){
+    if(selectedNodeEl){
+        selectedNodeEl.style.cursor = "grab";
+    }
+
+    dragging = false;
+    dragDevice = null;
+});
+
+function selectDevice(device, nodeEl){
+    selectedDevice = device;
+
+    if(selectedNodeEl){
+        selectedNodeEl.classList.remove("selected");
+    }
+
+    selectedNodeEl = nodeEl;
+
+    if(selectedNodeEl){
+        selectedNodeEl.classList.add("selected");
+    }
+
+    document.getElementById("selectedDeviceName").value =
+        device.label || device.device_id;
+
+    document.getElementById("roomSelect").value =
+        device.room_id || "";
+        
+    renderDeviceList();
+}
+
+function renderDeviceList(){
+    const list = document.getElementById("deviceList");
+    list.innerHTML = "";
+
+    allDevices().forEach(device => {
+        const div = document.createElement("div");
+
+        div.className =
+            "deviceItem" +
+            (selectedDevice && selectedDevice.device_id === device.device_id ? " active" : "");
+
+        div.innerText =
+            iconFor(device.node_type) + " " + (device.label || device.device_id);
+
+        div.onclick = function(){
+            selectedDevice = device;
+            document.getElementById("selectedDeviceName").value =
+                device.label || device.device_id;
+            document.getElementById("roomSelect").value =
+                device.room_id || "";
+            renderDeviceList();
+        };
+
+        list.appendChild(div);
+    });
+}
+
+function renderRoomSelect(){
+    const select = document.getElementById("roomSelect");
+    select.innerHTML = "";
+
+    floorData.rooms.forEach(room => {
+        const opt = document.createElement("option");
+        opt.value = room.id;
+        opt.textContent = room.room_name;
+        select.appendChild(opt);
+    });
+}
+
+async function savePosition(){
+    if(!selectedDevice){
+        alert("Select a device first");
+        return;
+    }
+
+    const roomId = document.getElementById("roomSelect").value;
+
+    const res = await fetch(`/devices/${selectedDevice.device_id}/position`, {
+        method:"PUT",
+        headers:{
+            "Content-Type":"application/json"
+        },
+        body:JSON.stringify({
+            x:selectedDevice.x,
+            y:selectedDevice.y,
+            room_id: roomId ? Number(roomId) : null
+        })
+    });
+
+    const data = await res.json();
+
+    if(!res.ok){
+        alert(JSON.stringify(data));
+        return;
+    }
+
+    alert("Device position saved");
+
+    await loadFloor();
+}
+
+function getRoomById(roomId){
+    return floorData.rooms.find(r => Number(r.id) === Number(roomId));
+}
+
+async function assignToRoom(){
+    if(!selectedDevice){
+        alert("Select a device first");
+        return;
+    }
+
+    const roomId = document.getElementById("roomSelect").value;
+    const room = getRoomById(roomId);
+
+    if(!room){
+        alert("Select room");
+        return;
+    }
+
+    selectedDevice.x = room.x;
+    selectedDevice.y = room.y;
+    selectedDevice.room_id = room.id;
+
+    await savePosition();
+}
+
+async function resetToRoomCenter(){
+    await assignToRoom();
+}
+
+window.onload = loadFloor;
+async function loadFloorDropdown() {
+    const select = document.getElementById("floorId");
+
+    try {
+        const res = await fetch("/floors");
+        const floors = await res.json();
+
+        select.innerHTML = `<option value="">Select floor</option>`;
+
+        floors.forEach(floor => {
+            const label = `${floor.name || "Floor"} / Building ID ${floor.building_id} / ID ${floor.id}`;
+
+            select.innerHTML += `
+                <option value="${floor.id}">
+                    ${label}
+                </option>
+            `;
+        });
+
+        const params = new URLSearchParams(window.location.search);
+        const requestedFloorId = params.get("floor_id");
+
+        if (
+            requestedFloorId &&
+            floors.some(floor => String(floor.id) === String(requestedFloorId))
+        ) {
+            select.value = requestedFloorId;
+            loadFloor();
+        }
+
+        else if (floors.length > 0) {
+            select.value = floors[0].id;
+            loadFloor();
+        }
+
+    } catch (err) {
+        console.error("Could not load floors:", err);
+    }
+}
+
+document.addEventListener("DOMContentLoaded", loadFloorDropdown);
+</script>
+
+<script src="/static/help_system.js"></script>
+
+<!-- UX Systems -->
+<link href="https://cdnjs.cloudflare.com/ajax/libs/intro.js/7.2.0/introjs.min.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/intro.js/7.2.0/intro.min.js"></script>
+<script src="/static/onboarding_tour.js"></script>
+<script src="/static/search_system.js"></script>
+<script src="/static/realtime_toasts.js"></script>
+
+<!-- Chart.js & Graphs System -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="/static/graphs.js"></script>
+<script src="/static/generate_firmware.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/static/service-worker.js');
+  });
+}
+</script>
+<script src="/static/analytics_widget.js"></script>
+</body>
+
+
+</html>

@@ -1,0 +1,570 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Alarm Settings</title>
+
+    <style>
+        body{
+            margin:0;
+            font-family:Arial, sans-serif;
+            background:#0f172a;
+            color:#e5e7eb;
+        }
+
+        .header{
+            padding:24px 34px;
+            background:#111827;
+            border-bottom:1px solid #334155;
+        }
+
+        .header h1{
+            margin:0;
+            font-size:28px;
+            color:#f8fafc;
+        }
+
+        .header p{
+            margin:8px 0 0;
+            color:#94a3b8;
+            font-size:15px;
+        }
+
+        .toolbar{
+            padding:16px 34px;
+            background:#0f172a;
+            border-bottom:1px solid #1e293b;
+            display:flex;
+            gap:12px;
+            align-items:center;
+            flex-wrap:wrap;
+        }
+
+        .adminHomeBtn{
+            display:inline-block;
+            background:#334155;
+            color:white;
+            border:none;
+            border-radius:8px;
+            padding:10px 14px;
+            cursor:pointer;
+            font-weight:bold;
+            text-decoration:none;
+        }
+
+        .adminHomeBtn:hover{
+            background:#475569;
+        }
+
+        .container{
+            padding:24px 34px 34px;
+        }
+
+        .grid{
+            display:grid;
+            grid-template-columns:1fr 1fr;
+            gap:22px;
+            align-items:start;
+        }
+
+        .card{
+            background:#111827;
+            border:1px solid #334155;
+            border-radius:16px;
+            padding:22px;
+            box-shadow:0 16px 40px rgba(0,0,0,0.35);
+            margin-bottom:22px;
+        }
+
+        .login-wrapper{
+            max-width:480px;
+            margin:40px auto;
+        }
+
+        h2{
+            margin-top:0;
+            color:#f8fafc;
+            font-size:22px;
+        }
+
+        h3{
+            margin-top:0;
+            color:#93c5fd;
+        }
+
+        p{
+            color:#94a3b8;
+            line-height:1.5;
+        }
+
+        label{
+            display:block;
+            margin-top:14px;
+            margin-bottom:6px;
+            color:#cbd5e1;
+            font-weight:bold;
+            font-size:14px;
+        }
+
+        input,
+        textarea,
+        button{
+            width:100%;
+            padding:11px 12px;
+            margin-top:6px;
+            margin-bottom:14px;
+            border-radius:8px;
+            box-sizing:border-box;
+            font-size:14px;
+        }
+
+        input,
+        textarea{
+            background:#020617;
+            color:white;
+            border:1px solid #334155;
+            outline:none;
+        }
+
+        input:focus,
+        textarea:focus{
+            border-color:#60a5fa;
+        }
+
+        textarea{
+            resize:vertical;
+            min-height:250px;
+            font-family:Consolas, monospace;
+            line-height:1.45;
+        }
+
+        button{
+            background:#2563eb;
+            color:white;
+            border:none;
+            font-weight:bold;
+            cursor:pointer;
+        }
+
+        button:hover{
+            background:#1d4ed8;
+        }
+
+        .success-btn{
+            background:#16a34a;
+        }
+
+        .success-btn:hover{
+            background:#15803d;
+        }
+
+        .delete-btn{
+            background:#dc2626;
+            width:auto;
+            margin:0;
+            padding:8px 12px;
+        }
+
+        .delete-btn:hover{
+            background:#b91c1c;
+        }
+
+        .recipient{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            background:#020617;
+            border:1px solid #334155;
+            padding:12px;
+            border-radius:10px;
+            margin-bottom:10px;
+        }
+
+        .recipient-left{
+            display:flex;
+            align-items:center;
+            gap:10px;
+            min-width:0;
+        }
+
+        .recipient-left b{
+            color:#e5e7eb;
+            word-break:break-all;
+        }
+
+        .recipient input[type="checkbox"]{
+            width:auto;
+            margin:0;
+            accent-color:#16a34a;
+        }
+
+        .hidden{
+            display:none;
+        }
+
+        .hint{
+            font-size:13px;
+            color:#94a3b8;
+            line-height:1.6;
+            background:#020617;
+            border:1px solid #334155;
+            border-radius:10px;
+            padding:12px;
+            margin-top:10px;
+        }
+
+        .statusBox{
+            display:none;
+            margin-top:12px;
+            padding:12px;
+            border-radius:10px;
+            font-size:14px;
+        }
+
+        .statusBox.good{
+            display:block;
+            background:#14532d;
+            color:#bbf7d0;
+            border:1px solid #22c55e;
+        }
+
+        .statusBox.bad{
+            display:block;
+            background:#7f1d1d;
+            color:#fecaca;
+            border:1px solid #ef4444;
+        }
+
+        .empty{
+            padding:14px;
+            background:#020617;
+            border:1px solid #334155;
+            border-radius:10px;
+            color:#94a3b8;
+        }
+
+        @media(max-width:900px){
+            .grid{
+                grid-template-columns:1fr;
+            }
+
+            .container{
+                padding:20px 18px;
+            }
+
+            .header{
+                padding:22px 18px;
+            }
+
+            .toolbar{
+                padding:14px 18px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="header">
+    <h1>Alarm Settings</h1>
+    <p>Manage alarm email recipients and customize the email template used when alarms are triggered.</p>
+</div>
+
+<div class="toolbar">
+    <button class="adminHomeBtn" onclick="window.location.href='/admin'">
+        ← Admin Home
+    </button>
+</div>
+
+<div class="container">
+
+    <div id="loginCard" class="card login-wrapper">
+        <h2>Alarm Settings Access</h2>
+        <p>Enter the admin password to unlock alarm email settings.</p>
+
+        <label>Admin Password</label>
+        <input type="password" id="adminPassword" placeholder="Enter admin password">
+
+        <button class="success-btn" onclick="unlockPage()">Open Settings</button>
+
+        <div id="loginStatus" class="statusBox"></div>
+
+        <div class="hint">
+            This protects alarm email recipients and email template editing.
+        </div>
+    </div>
+
+    <div id="settingsArea" class="hidden">
+
+        <div class="grid">
+
+            <div class="card">
+                <h2>Recipients</h2>
+                <p>Add or remove emails that should receive alarm notifications.</p>
+
+                <div id="recipientList">
+                    <div class="empty">Unlock settings to load recipients.</div>
+                </div>
+
+                <label>Add Recipient Email</label>
+                <input type="email" id="newEmail" placeholder="example@gmail.com">
+
+                <button class="success-btn" onclick="addRecipient()">Add Recipient</button>
+
+                <div id="recipientStatus" class="statusBox"></div>
+            </div>
+
+            <div class="card">
+                <h2>Email Template</h2>
+                <p>Customize the subject and body used for alarm notification emails.</p>
+
+                <label>Subject Template</label>
+                <input type="text" id="subjectTemplate">
+
+                <label>Body Template</label>
+                <textarea id="bodyTemplate" rows="14"></textarea>
+
+                <button onclick="saveTemplate()">Save Template</button>
+
+                <div id="templateStatus" class="statusBox"></div>
+
+                <div class="hint">
+                    Available variables:<br>
+                    {device_id}, {node_type}, {room}, {alarms}, {telemetry}
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+<script>
+let adminPassword = "";
+
+function escapeHtml(value) {
+    if (value === null || value === undefined) {
+        return "";
+    }
+
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+function showStatus(id, message, good=true) {
+    const box = document.getElementById(id);
+
+    if (!box) {
+        return;
+    }
+
+    box.className = good ? "statusBox good" : "statusBox bad";
+    box.innerText = message;
+}
+
+function clearStatus(id) {
+    const box = document.getElementById(id);
+
+    if (!box) {
+        return;
+    }
+
+    box.className = "statusBox";
+    box.innerText = "";
+}
+
+async function unlockPage(){
+    adminPassword = document.getElementById("adminPassword").value;
+
+    clearStatus("loginStatus");
+
+    if(!adminPassword){
+        showStatus("loginStatus", "Enter admin password first.", false);
+        return;
+    }
+
+    document.getElementById("loginCard").classList.add("hidden");
+    document.getElementById("settingsArea").classList.remove("hidden");
+
+    await loadSettings();
+}
+
+async function loadSettings(){
+    const recipientList = document.getElementById("recipientList");
+    recipientList.innerHTML = `<div class="empty">Loading alarm settings...</div>`;
+
+    try {
+        const res = await fetch("/alarm-settings");
+        const data = await res.json();
+
+        if (!res.ok) {
+            throw new Error(data.detail || "Failed to load alarm settings");
+        }
+
+        recipientList.innerHTML = "";
+
+        if (!data.recipients || data.recipients.length === 0) {
+            recipientList.innerHTML = `<div class="empty">No recipients added yet.</div>`;
+        } else {
+            data.recipients.forEach(r => {
+                const div = document.createElement("div");
+                div.className = "recipient";
+
+                div.innerHTML = `
+                    <div class="recipient-left">
+                        <input type="checkbox" ${r.enabled ? "checked" : ""}
+                            onchange="toggleRecipient(${r.id}, this.checked)">
+                        <b>${escapeHtml(r.email)}</b>
+                    </div>
+
+                    <button class="delete-btn" onclick="deleteRecipient(${r.id})">
+                        Delete
+                    </button>
+                `;
+
+                recipientList.appendChild(div);
+            });
+        }
+
+        if (data.template) {
+            document.getElementById("subjectTemplate").value =
+                data.template.subject_template || "";
+
+            document.getElementById("bodyTemplate").value =
+                data.template.body_template || "";
+        }
+
+    } catch (err) {
+        recipientList.innerHTML = `
+            <div class="statusBox bad" style="display:block;">
+                ${escapeHtml(err.message)}
+            </div>
+        `;
+    }
+}
+
+async function addRecipient(){
+    const email = document.getElementById("newEmail").value.trim();
+
+    clearStatus("recipientStatus");
+
+    if (!email) {
+        showStatus("recipientStatus", "Recipient email is required.", false);
+        return;
+    }
+
+    const res = await fetch("/alarm-settings/recipients", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+            admin_password:adminPassword,
+            email:email
+        })
+    });
+
+    const data = await res.json();
+
+    if(!res.ok){
+        showStatus("recipientStatus", data.detail || "Failed to add recipient.", false);
+        return;
+    }
+
+    document.getElementById("newEmail").value = "";
+
+    showStatus("recipientStatus", "Recipient added successfully.", true);
+    await loadSettings();
+}
+
+async function deleteRecipient(id){
+    if (!confirm("Delete this recipient?")) {
+        return;
+    }
+
+    clearStatus("recipientStatus");
+
+    const res = await fetch(
+        "/alarm-settings/recipients/" + id +
+        "?admin_password=" + encodeURIComponent(adminPassword),
+        { method:"DELETE" }
+    );
+
+    const data = await res.json();
+
+    if(!res.ok){
+        showStatus("recipientStatus", data.detail || "Failed to delete recipient.", false);
+        return;
+    }
+
+    showStatus("recipientStatus", "Recipient deleted.", true);
+    await loadSettings();
+}
+
+async function toggleRecipient(id, enabled){
+    clearStatus("recipientStatus");
+
+    const res = await fetch("/alarm-settings/recipients/" + id + "/enabled", {
+        method:"PUT",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+            admin_password:adminPassword,
+            enabled:enabled
+        })
+    });
+
+    const data = await res.json();
+
+    if(!res.ok){
+        showStatus("recipientStatus", data.detail || "Failed to update recipient.", false);
+        await loadSettings();
+        return;
+    }
+
+    showStatus("recipientStatus", "Recipient status updated.", true);
+}
+
+async function saveTemplate(){
+    const subject = document.getElementById("subjectTemplate").value.trim();
+    const body = document.getElementById("bodyTemplate").value.trim();
+
+    clearStatus("templateStatus");
+
+    if (!subject || !body) {
+        showStatus("templateStatus", "Subject and body template are required.", false);
+        return;
+    }
+
+    const res = await fetch("/alarm-settings/template", {
+        method:"PUT",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+            admin_password:adminPassword,
+            subject_template:subject,
+            body_template:body
+        })
+    });
+
+    const data = await res.json();
+
+    if(!res.ok){
+        showStatus("templateStatus", data.detail || "Failed to save template.", false);
+        return;
+    }
+
+    showStatus("templateStatus", "Template updated successfully.", true);
+}
+
+document.addEventListener("keydown", function(event) {
+    if (event.key === "Enter" && !document.getElementById("loginCard").classList.contains("hidden")) {
+        unlockPage();
+    }
+});
+</script>
+
+</body>
+</html>

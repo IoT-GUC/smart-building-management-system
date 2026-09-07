@@ -40,4 +40,4 @@ echo NOTE: If Windows Firewall asks for permission, click "Allow Access"
 echo so other devices on your network can reach the server.
 echo.
 
-.\venv\Scripts\uvicorn maintestfinal2:app --host 0.0.0.0 --port 8000 --reload
+.\venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
