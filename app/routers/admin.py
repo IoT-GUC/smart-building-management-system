@@ -886,6 +886,8 @@ def admin_summary():
 
             return telemetry
 
+        now_utc = datetime.now(timezone.utc)
+
         def get_local_device_status(local_telemetry):
             if not local_telemetry:
                 return "offline", None
@@ -896,8 +898,7 @@ def admin_summary():
             if not updated_dt:
                 return "offline", updated_at
 
-            now = datetime.now(timezone.utc)
-            seconds_ago = (now - updated_dt).total_seconds()
+            seconds_ago = (now_utc - updated_dt).total_seconds()
 
             if 0 <= seconds_ago <= 300 and (local_telemetry.get("alarm_message") or "").upper() != "OFFLINE":
                 return "online", updated_at
@@ -961,7 +962,7 @@ def admin_summary():
             if selected_last_seen:
                 selected_dt = parse_datetime_safe(selected_last_seen)
                 if selected_dt:
-                    seconds_ago = (now - selected_dt).total_seconds()
+                    seconds_ago = (now_utc - selected_dt).total_seconds()
                     if seconds_ago > 300 or seconds_ago < 0:
                         selected_status = "offline"
 
