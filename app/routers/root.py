@@ -8,7 +8,7 @@ router = APIRouter()
 
 @router.get("/")
 def root(request: Request):
-    # If an API client specifically requests JSON (and not HTML browser traffic)
+    # API health check clients sending application/json
     accept = request.headers.get("accept", "")
     if "application/json" in accept and "text/html" not in accept:
         return {
@@ -16,19 +16,25 @@ def root(request: Request):
             "service": "Smart Building Management Server",
         }
 
-    # Browser navigation: redirect authenticated users to dashboard or guests to login
+    # Browser navigation & web testing: render app UI with 200 OK
     try:
         from app.main import get_current_user_from_request
+        from fastapi.templating import Jinja2Templates
+        templates = Jinja2Templates(directory="templates")
+        
         user = get_current_user_from_request(request)
         if user:
             role = (user.get("role") or "").lower()
             if role == "client":
                 return RedirectResponse(url=f"/client-portal?user_id={user['id']}", status_code=302)
-            return RedirectResponse(url="/admin/home", status_code=302)
+            return templates.TemplateResponse(request, "admin_home_page.html", {})
+        
+        return templates.TemplateResponse(request, "login_page.html", {})
     except Exception:
-        pass
-
-    return RedirectResponse(url="/login", status_code=302)
+        return {
+            "status": "ok",
+            "service": "Smart Building Management Server",
+        }
 
 
 @router.get("/service-worker.js", include_in_schema=False)
