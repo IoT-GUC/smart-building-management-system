@@ -7,14 +7,25 @@ echo "=========================================================="
 echo "Starting Smart Building Management System (Linux)..."
 echo "=========================================================="
 
-# Check if virtual environment exists
-if [ ! -f "venv/bin/python" ]; then
-    echo "[ERROR] Virtual environment not found!"
+# Detect Python executable
+PYTHON_CMD=""
+if [ -f "venv/bin/python" ]; then
+    PYTHON_CMD="venv/bin/python"
+elif [ -f ".venv/bin/python" ]; then
+    PYTHON_CMD=".venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="python"
+fi
+
+if [ -z "$PYTHON_CMD" ]; then
+    echo "[ERROR] Python not found!"
     echo "Please run 'bash linux/install.sh' first to setup the system."
     exit 1
 fi
 
-# Get the local IP address safely
+# Get local IP address safely
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
 echo ""
@@ -35,4 +46,4 @@ echo "NOTE: Ensure your Linux firewall (ufw or iptables) allows traffic on port 
 echo "e.g. 'sudo ufw allow 8000'"
 echo ""
 
-./venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+"$PYTHON_CMD" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
