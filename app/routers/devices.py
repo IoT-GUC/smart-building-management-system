@@ -9,7 +9,11 @@ import sqlite3
 import csv
 import io
 import re
-from app.main import *
+from typing import Optional
+from app.db.connection import get_db_connection as db
+from app.main import get_device_metadata_by_device_id, log_audit_event
+
+
 router = APIRouter()
 
 @router.get("/device-status/{device_id}")
@@ -1313,29 +1317,46 @@ def sync_device_formatter(device_id: str):
         ],
     }
 @router.get("/api/devices/{device_id}/history")
-def get_device_history(device_id: str):
+def get_device_history(
+    device_id: str,
+    from_ts: Optional[str] = Query(None, alias="from"),
+    to_ts: Optional[str] = Query(None, alias="to"),
+    limit: int = Query(100, ge=1, le=5000),
+    order: str = Query("asc"),
+):
     conn = db()
     try:
-        cursor = conn.execute(
-            '''
-            SELECT telemetry, timestamp 
-            FROM historical_telemetry 
-            WHERE device_id = ? 
-            ORDER BY timestamp ASC 
-            LIMIT 100
-            ''', 
-            (device_id,)
-        )
+        order_direction = "DESC" if order.lower() == "desc" else "ASC"
+        query = "SELECT telemetry, timestamp FROM historical_telemetry WHERE device_id = ?"
+        params = [device_id]
+        
+        if from_ts:
+            query += " AND timestamp >= ?"
+            params.append(from_ts)
+        if to_ts:
+            query += " AND timestamp <= ?"
+            params.append(to_ts)
+            
+        query += f" ORDER BY timestamp {order_direction} LIMIT ?"
+        params.append(limit)
+
+        cursor = conn.execute(query, params)
         rows = cursor.fetchall()
         
         history = []
         for row in rows:
+            telemetry_data = row["telemetry"]
+            if isinstance(telemetry_data, str):
+                try:
+                    telemetry_data = json.loads(telemetry_data)
+                except Exception:
+                    pass
             history.append({
-                "telemetry": json.loads(row["telemetry"]),
+                "telemetry": telemetry_data,
                 "timestamp": row["timestamp"]
             })
             
-        return {"status": "success", "history": history}
+        return {"status": "success", "device_id": device_id, "count": len(history), "history": history}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -1372,10 +1393,18 @@ async def bulk_import_devices(file: UploadFile = File(...)):
             chip_mac = f"BULK-{dev_eui}"
             device_id = f"node-{dev_eui.lower()}"
             
-            # Auto-create or fetch hierarchy
-            b_row = cursor.execute("SELECT id FROM buildings WHERE name = ?", (building_name,)).fetchone()
+            # Resolve site_id from row or database default
+            raw_site_id = row.get('site_id', '').strip()
+            if raw_site_id and raw_site_id.isdigit():
+                site_id = int(raw_site_id)
+            else:
+                site_row = cursor.execute("SELECT id FROM sites LIMIT 1").fetchone()
+                site_id = site_row["id"] if site_row else 1
+
+            # Site-scoped building lookup or creation
+            b_row = cursor.execute("SELECT id FROM buildings WHERE site_id = ? AND name = ?", (site_id, building_name)).fetchone()
             if not b_row:
-                b_id = cursor.execute("INSERT INTO buildings (site_id, name) VALUES (1, ?)", (building_name,)).lastrowid
+                b_id = cursor.execute("INSERT INTO buildings (site_id, name) VALUES (?, ?)", (site_id, building_name)).lastrowid
             else:
                 b_id = b_row["id"]
                 
@@ -1397,11 +1426,22 @@ async def bulk_import_devices(file: UploadFile = File(...)):
                 errors.append(f"Profile {profile_id} not found for {dev_eui}")
                 continue
                 
-            # Insert into database using the new schema
+            # Insert or update device using UPSERT
             cursor.execute("""
-                INSERT OR REPLACE INTO devices 
+                INSERT INTO devices 
                 (chip_mac, device_id, dev_eui, app_key, join_eui, label, room_id, profile_id, profile_code, node_type, configuration_status) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'legacy')
+                ON CONFLICT(chip_mac) DO UPDATE SET
+                    device_id = excluded.device_id,
+                    dev_eui = excluded.dev_eui,
+                    app_key = excluded.app_key,
+                    join_eui = excluded.join_eui,
+                    label = excluded.label,
+                    room_id = excluded.room_id,
+                    profile_id = excluded.profile_id,
+                    profile_code = excluded.profile_code,
+                    node_type = excluded.node_type,
+                    updated_at = CURRENT_TIMESTAMP
             """, (
                 chip_mac, device_id, dev_eui, app_key, "0000000000000000",
                 label, room_id, profile_id, profile['profile_code'], profile['node_type']

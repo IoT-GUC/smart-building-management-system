@@ -6,7 +6,8 @@ import sqlite3
 import csv
 import io
 import re
-from app.main import *
+from app.db.connection import get_db_connection as db
+from app.main import read_tb_latest_telemetry
 router = APIRouter()
 
 @router.get("/floor-map-data")

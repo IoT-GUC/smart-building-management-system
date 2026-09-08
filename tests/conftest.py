@@ -31,6 +31,11 @@ def setup_test_db():
 
 
 @pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
 def client():
     with TestClient(app) as c:
         yield c

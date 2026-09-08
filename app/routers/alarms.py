@@ -6,7 +6,9 @@ import sqlite3
 import csv
 import io
 import re
-from app.main import *
+from app.db.connection import get_db_connection as db
+from app.main import log_audit_event
+
 router = APIRouter()
 
 @router.get("/alarms/export.csv")

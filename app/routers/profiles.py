@@ -9,7 +9,9 @@ import sqlite3
 import csv
 import io
 import re
-from app.main import *
+from app.db.connection import get_db_connection as db
+from app.main import get_sensor_profile_detail, log_audit_event
+
 router = APIRouter()
 
 @router.get("/sensor-profiles")

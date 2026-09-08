@@ -403,6 +403,10 @@ def up(conn):
                             email TEXT NOT NULL UNIQUE,
                             role TEXT DEFAULT 'client',
                             enabled INTEGER DEFAULT 1,
+                            password_hash TEXT,
+                            password_salt TEXT,
+                            password_iterations INTEGER,
+                            password_updated_at TEXT,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )
     """)

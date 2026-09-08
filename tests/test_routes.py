@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.main import app
+from fastapi.testclient import TestClient
 
 
 def test_no_duplicate_route_paths_and_methods():
@@ -19,13 +20,20 @@ def test_no_duplicate_route_paths_and_methods():
     assert not duplicates, f"Duplicate routes found in FastAPI app: {duplicates}"
 
 
-def test_static_files_route_mounted():
+def test_static_files_route_mounted(client: TestClient):
     mount_paths = [getattr(r, "path", None) for r in app.routes]
     assert "/static" in mount_paths or "/static/{path:path}" in mount_paths or any(
         p and p.startswith("/static") for p in mount_paths
     )
+    # Smoke test static file serving
+    res = client.get("/static/manifest.json")
+    assert res.status_code == 200
 
 
-def test_service_worker_route_exists():
+def test_service_worker_route_exists(client: TestClient):
     paths = [getattr(r, "path", None) for r in app.routes]
     assert "/service-worker.js" in paths
+
+    response = client.get("/service-worker.js")
+    assert response.status_code == 200
+    assert "javascript" in response.headers.get("content-type", "").lower()

@@ -10,7 +10,9 @@ import csv
 import io
 import re
 import zipfile
-from app.main import *
+from app.db.connection import get_db_connection as db
+from app.main import get_firmware_module_detail, log_audit_event
+
 
 router = APIRouter()
 

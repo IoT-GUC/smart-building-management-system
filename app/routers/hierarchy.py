@@ -9,7 +9,8 @@ import sqlite3
 import csv
 import io
 import re
-from app.main import *
+from app.services.uploads import save_image_securely
+
 router = APIRouter()
 
 @router.post("/floors/{floor_id}/upload-image")
@@ -29,21 +30,8 @@ async def upload_floor_image(
         conn.close()
         raise HTTPException(status_code=404, detail="Floor not found")
 
-    filename = image.filename.replace(" ", "_")
-
-    import os
-    save_path = os.path.join(UPLOAD_DIR, f"floor_{floor_id}_{filename}")
-
-    with open(save_path, "wb") as buffer:
-        shutil.copyfileobj(image.file, buffer)
-
-    from PIL import Image
-
-    img = Image.open(save_path)
-
-    width, height = img.size
-
-    image_path = f"/uploads/floor_{floor_id}_{filename}"
+    filename, width, height = await save_image_securely(image, UPLOAD_DIR, prefix=f"floor_{floor_id}")
+    image_path = f"/uploads/{filename}"
 
     conn.execute("""
         UPDATE floors
@@ -74,27 +62,12 @@ async def upload_floorplan(
     floor: str = Form(...),
     image: UploadFile = File(...)
 ):
-    file_ext = os.path.splitext(image.filename)[1].lower()
-
-    if file_ext not in [".jpg", ".jpeg", ".png", ".webp"]:
-        raise HTTPException(status_code=400, detail="Only JPG, PNG, or WEBP images are allowed")
-
     safe_building = re.sub(r"[^a-zA-Z0-9_-]", "_", building)
     safe_floor = re.sub(r"[^a-zA-Z0-9_-]", "_", floor)
+    prefix = f"{safe_building}_floor_{safe_floor}"
 
-    filename = f"{safe_building}_floor_{safe_floor}{file_ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-
-    content = await image.read()
-
-    with open(file_path, "wb") as f:
-        f.write(content)
-
-    try:
-        with Image.open(file_path) as img:
-            width, height = img.size
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid image file")
+    filename, width, height = await save_image_securely(image, UPLOAD_DIR, prefix=prefix)
+    image_path = f"/uploads/{filename}"
 
     conn = db()
     cur = conn.execute(
@@ -110,7 +83,7 @@ async def upload_floorplan(
         (
             building,
             floor,
-            f"/uploads/{filename}",
+            image_path,
             width,
             height,
         ),
@@ -124,7 +97,7 @@ async def upload_floorplan(
         "floorplan_id": floorplan_id,
         "building": building,
         "floor": floor,
-        "image_path": f"/uploads/{filename}",
+        "image_path": image_path,
         "image_width": width,
         "image_height": height,
     }
@@ -1085,29 +1058,8 @@ async def upload_site_map(
         conn.close()
         raise HTTPException(status_code=404, detail="Site not found")
 
-    file_ext = os.path.splitext(image.filename)[1].lower()
-
-    if file_ext not in [".jpg", ".jpeg", ".png", ".webp"]:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Only JPG, PNG, or WEBP images are allowed")
-
     safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", site["name"])
-
-    filename = f"site_{site_id}_{safe_name}{file_ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-
-    content = await image.read()
-
-    with open(file_path, "wb") as f:
-        f.write(content)
-
-    try:
-        with Image.open(file_path) as img:
-            width, height = img.size
-    except Exception:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Invalid image file")
-
+    filename, width, height = await save_image_securely(image, UPLOAD_DIR, prefix=f"site_{site_id}_{safe_name}")
     image_path = f"/uploads/{filename}"
 
     conn.execute("""

@@ -6,7 +6,11 @@ import sqlite3
 import csv
 import io
 import re
-from app.main import *
+from app.db.connection import get_db_connection as db
+from app.main import get_current_user_from_request, create_password_hash, safe_user_dict, log_audit_event
+
+
+
 router = APIRouter()
 
 @router.put("/users/{user_id}/credentials")
@@ -142,6 +146,13 @@ def update_user_credentials(user_id: int, data: dict, request: Request):
         SET {", ".join(updates)}
         WHERE id = ?
     """, params)
+
+    if ("password" in changed_fields) or (changed_fields.get("enabled", {}).get("new") == 0):
+        conn.execute("""
+            UPDATE auth_sessions
+            SET revoked_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND revoked_at IS NULL
+        """, (user_id,))
 
     conn.commit()
 
@@ -388,7 +399,15 @@ def disable_user(user_id: int):
         WHERE id = ?
     """, (user_id,))
 
+    conn.execute("""
+        UPDATE auth_sessions
+        SET revoked_at = CURRENT_TIMESTAMP
+        WHERE user_id = ? AND revoked_at IS NULL
+    """, (user_id,))
+
     conn.commit()
+
+
 
     log_audit_event(
         conn,

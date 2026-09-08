@@ -2850,350 +2850,9 @@ def seed_default_sensor_profiles(conn: sqlite3.Connection):
 
 
 def db():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA foreign_keys = ON')
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS devices(
-            chip_mac TEXT PRIMARY KEY,
-            device_id TEXT,
-            dev_eui TEXT,
-            join_eui TEXT,
-            app_key TEXT,
-            node_type TEXT,
-            building TEXT,
-            floor TEXT,
-            room TEXT,
-            label TEXT,
-            x INTEGER,
-            y INTEGER,
-            icon_type TEXT
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS device_capabilities(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT NOT NULL,
-            capability TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(device_id, capability)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS floorplans(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            building TEXT NOT NULL,
-            floor TEXT NOT NULL,
-            image_path TEXT NOT NULL,
-            image_width INTEGER,
-            image_height INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rooms(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            floorplan_id INTEGER NOT NULL,
-            building TEXT NOT NULL,
-            floor TEXT NOT NULL,
-            room_name TEXT NOT NULL,
-            polygon_points TEXT NOT NULL,
-            x INTEGER NOT NULL,
-            y INTEGER NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (floorplan_id) REFERENCES floorplans(id)
-        )
-    """
-        )
-    safe_add_column(conn, 'floorplans', 'floor_id INTEGER')
-    safe_add_column(conn, 'rooms', 'floor_id INTEGER')
-    safe_add_column(conn, 'devices', 'client_id INTEGER')
-    safe_add_column(conn, 'devices', 'site_id INTEGER')
-    safe_add_column(conn, 'devices', 'building_id INTEGER')
-    safe_add_column(conn, 'devices', 'floor_id INTEGER')
-    safe_add_column(conn, 'devices', 'room_id INTEGER')
-    safe_add_column(conn, 'gateways', 'building_id INTEGER')
-    safe_add_column(conn, 'gateways', 'floor_id INTEGER')
-    safe_add_column(conn, 'gateways', 'x INTEGER')
-    safe_add_column(conn, 'gateways', 'y INTEGER')
-    safe_add_column(conn, 'gateways', 'label TEXT')
-    safe_add_column(conn, 'gateways', 'location_note TEXT')
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS site_maps(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            site_id INTEGER NOT NULL,
-            image_path TEXT,
-            image_width INTEGER,
-            image_height INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (site_id) REFERENCES sites(id)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS clients(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            tb_customer_id TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sites(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            campus_image_path TEXT,
-            image_width INTEGER,
-            image_height INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (client_id) REFERENCES clients(id)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS gateways(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            gateway_id TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            client_id INTEGER,
-            site_id INTEGER,
-            status TEXT DEFAULT 'unknown',
-            last_seen TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (client_id) REFERENCES clients(id),
-            FOREIGN KEY (site_id) REFERENCES sites(id)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS buildings(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            site_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            polygon_points TEXT,
-            x INTEGER,
-            y INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (site_id) REFERENCES sites(id)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS floors(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            building_id INTEGER NOT NULL,
-            name TEXT NOT NULL,
-            floor_number TEXT,
-            image_path TEXT,
-            image_width INTEGER,
-            image_height INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (building_id) REFERENCES buildings(id)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT NOT NULL UNIQUE,
-            role TEXT DEFAULT 'client',
-            enabled INTEGER DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    safe_add_column(conn, 'users', 'password_salt TEXT')
-    safe_add_column(conn, 'users', 'password_hash TEXT')
-    safe_add_column(conn, 'users', 'password_iterations INTEGER')
-    safe_add_column(conn, 'users', 'last_login_at TEXT')
-    safe_add_column(conn, 'users', 'password_updated_at TEXT')
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS user_access(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            client_id INTEGER,
-            site_id INTEGER,
-            building_id INTEGER,
-            floor_id INTEGER,
-            access_level TEXT DEFAULT 'viewer',
-            can_view_devices INTEGER DEFAULT 1,
-            can_view_gateways INTEGER DEFAULT 1,
-            can_view_alarms INTEGER DEFAULT 1,
-            can_view_telemetry INTEGER DEFAULT 1,
-            can_manage_email_settings INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (client_id) REFERENCES clients(id),
-            FOREIGN KEY (site_id) REFERENCES sites(id),
-            FOREIGN KEY (building_id) REFERENCES buildings(id),
-            FOREIGN KEY (floor_id) REFERENCES floors(id)
-        )
-    """
-        )
-    conn.execute(
-        """
-    CREATE TABLE IF NOT EXISTS auth_sessions(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        token_hash TEXT NOT NULL UNIQUE,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        expires_at TEXT NOT NULL,
-        revoked_at TEXT,
-        ip_address TEXT,
-        user_agent TEXT,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-    )
-"""
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS device_latest_telemetry(
-            device_id TEXT PRIMARY KEY,
-            telemetry TEXT,
-            alarm_active INTEGER DEFAULT 0,
-            alarm_message TEXT DEFAULT 'OK',
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS historical_telemetry(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT,
-            telemetry TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    conn.execute(
-        'CREATE INDEX IF NOT EXISTS idx_historical_telemetry_device_id ON historical_telemetry(device_id)'
-        )
-    conn.execute(
-        'CREATE INDEX IF NOT EXISTS idx_historical_telemetry_timestamp ON historical_telemetry(timestamp)'
-        )
-    conn.execute(
-        'CREATE INDEX IF NOT EXISTS idx_historical_telemetry_device_timestamp ON historical_telemetry(device_id, timestamp)'
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS audit_log(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            actor TEXT DEFAULT 'admin',
-            action TEXT NOT NULL,
-            target_type TEXT,
-            target_id TEXT,
-            details TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    existing_audit_columns = [row[1] for row in conn.execute(
-        'PRAGMA table_info(audit_log)').fetchall()]
-    audit_columns_to_add = {'message': 'TEXT', 'client_id': 'INTEGER',
-        'site_id': 'INTEGER', 'building_id': 'INTEGER', 'floor_id':
-        'INTEGER', 'room_id': 'INTEGER', 'device_id': 'TEXT', 'gateway_id':
-        'TEXT', 'user_id': 'INTEGER'}
-    for column_name, column_type in audit_columns_to_add.items():
-        if column_name not in existing_audit_columns:
-            conn.execute(
-                f"""
-                ALTER TABLE audit_log
-                ADD COLUMN {column_name} {column_type}
-            """
-                )
-    conn.commit()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS alarm_recipients(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT NOT NULL UNIQUE,
-            enabled INTEGER DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS alarm_history(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT NOT NULL,
-            node_type TEXT,
-            building TEXT,
-            floor TEXT,
-            room TEXT,
-            alarm_type TEXT,
-            alarm_message TEXT,
-            telemetry TEXT,
-            triggered_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    from app.db.connection import get_db_connection
+    return get_db_connection()
 
-            acknowledged INTEGER DEFAULT 0,
-            acknowledged_by TEXT,
-            acknowledged_at TEXT,
-
-            resolved INTEGER DEFAULT 0,
-            resolved_by TEXT,
-            resolved_at TEXT
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS alarm_email_template(
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            subject_template TEXT NOT NULL,
-            body_template TEXT NOT NULL,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO alarm_email_template (
-            id,
-            subject_template,
-            body_template
-        ) VALUES (
-            1,
-            'Smart Building Alarm - {room}',
-            'Alarm detected in {building}, floor {floor}, room {room}
-
-Device ID: {device_id}
-Node Type: {node_type}
-
-Alarm(s):
-{alarms}
-
-Telemetry:
-{telemetry}
-
-Please check the ThingsBoard dashboard immediately.'
-        )
-    """
-        )
-    ensure_sensor_profile_schema(conn)
-    seed_default_sensor_profiles(conn)
-    ensure_profile_alarm_runtime_schema(conn)
-    conn.commit()
-    return conn
 
 
 def hash_password(password: str, salt_hex: str, iterations: int=None):
@@ -3313,14 +2972,17 @@ def cleanup_expired_sessions(conn):
     conn.commit()
 
 
-def create_login_session(conn, user_id: int, request: Request):
+def create_login_session(conn, user_id: int, request: Request = None):
     raw_token, token_hash = create_session_token()
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=
         SESSION_TTL_SECONDS)).strftime('%Y-%m-%d %H:%M:%S')
     ip_address = None
-    if request.client:
-        ip_address = request.client.host
-    user_agent = request.headers.get('user-agent', '')
+    user_agent = ""
+    if request:
+        if getattr(request, "client", None):
+            ip_address = request.client.host
+        if getattr(request, "headers", None):
+            user_agent = request.headers.get("user-agent", "")
     conn.execute(
         """
         INSERT INTO auth_sessions(
@@ -3584,18 +3246,20 @@ def get_device_by_device_id(conn: sqlite3.Connection, device_id: str):
         , (device_id,)).fetchone()
 
 
-def get_room_from_database(conn: sqlite3.Connection, building: str, floor:
-    str, room_name: str):
+def get_room_from_database(conn: sqlite3.Connection, building: str, floor: str, room_name: str):
     cur = conn.execute(
         """
-        SELECT id, floorplan_id, building, floor, room_name, x, y
-        FROM rooms
-        WHERE building = ?
-        AND floor = ?
-        AND room_name = ?
+        SELECT r.id, r.floor_id, b.name AS building, f.name AS floor, r.room_name, r.x, r.y
+        FROM rooms r
+        LEFT JOIN floors f ON r.floor_id = f.id
+        LEFT JOIN buildings b ON f.building_id = b.id
+        WHERE b.name = ?
+        AND f.name = ?
+        AND r.room_name = ?
         LIMIT 1
-    """
-        , (building, floor, room_name))
+    """,
+        (building, floor, room_name),
+    )
     return cur.fetchone()
 
 
@@ -4288,7 +3952,8 @@ def log_audit_event(conn, action, actor='admin', target_type=None,
             gateway_id, user_id))
         conn.commit()
     except Exception as e:
-        logger.error('Audit log error:', e)
+        logger.error("Audit log error: %s", e, exc_info=True)
+
 
 
 def get_device_scope_for_audit(conn, device_id):
@@ -6297,47 +5962,84 @@ app.include_router(webhooks_router)
 app.include_router(ws_router)
 
 
+async def check_offline_devices(conn: sqlite3.Connection, now: datetime | None = None):
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            t.device_id,
+            t.updated_at,
+            t.alarm_active,
+            t.alarm_message,
+            d.client_id,
+            d.site_id,
+            d.node_type,
+            d.building,
+            d.floor,
+            d.room
+        FROM device_latest_telemetry t
+        LEFT JOIN devices d ON t.device_id = d.device_id
+    """)
+    rows = cursor.fetchall()
+    for row in rows:
+        device_id = row["device_id"]
+        updated_at_str = row["updated_at"]
+        if not updated_at_str:
+            continue
+        try:
+            if "." in updated_at_str:
+                updated_at_str = updated_at_str.split(".")[0]
+            updated_at = datetime.strptime(
+                updated_at_str, "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+
+        if now - updated_at > timedelta(hours=24):
+            if row["alarm_message"] != "OFFLINE":
+                cursor.execute(
+                    "UPDATE device_latest_telemetry SET alarm_active=1, alarm_message='OFFLINE' WHERE device_id=?",
+                    (device_id,),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO alarm_history (device_id, node_type, building, floor, room, alarm_type, alarm_message)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        device_id,
+                        row["node_type"],
+                        row["building"],
+                        row["floor"],
+                        row["room"],
+                        "SYSTEM_OFFLINE",
+                        "Device has not sent data in 24 hours.",
+                    ),
+                )
+                alert_msg = {
+                    "type": "ALARM",
+                    "device_id": device_id,
+                    "message": "Device Offline (No data in 24h)",
+                    "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                asyncio.create_task(
+                    manager.broadcast(
+                        alert_msg, client_id=row["client_id"], site_id=row["site_id"]
+                    )
+                )
+    conn.commit()
+
+
 async def offline_watchdog():
     while True:
         try:
-            conn = sqlite3.connect(DB, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT device_id, updated_at, alarm_active, alarm_message FROM device_latest_telemetry'
-                )
-            rows = cursor.fetchall()
-            now = datetime.now(timezone.utc)
-            for row in rows:
-                device_id = row['device_id']
-                updated_at_str = row['updated_at']
-                try:
-                    if '.' in updated_at_str:
-                        updated_at_str = updated_at_str.split('.')[0]
-                    updated_at = datetime.strptime(updated_at_str,
-                        '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
-                except Exception as e:
-                    continue
-                if now - updated_at > timedelta(hours=24):
-                    if row['alarm_message'] != 'OFFLINE':
-                        cursor.execute(
-                            "UPDATE device_latest_telemetry SET alarm_active=1, alarm_message='OFFLINE' WHERE device_id=?"
-                            , (device_id,))
-                        cursor.execute(
-                            'INSERT INTO alarm_history (device_id, alarm_type, message) VALUES (?, ?, ?)'
-                            , (device_id, 'SYSTEM_OFFLINE',
-                            'Device has not sent data in 24 hours.'))
-                        alert_msg = {'type': 'ALARM', 'device_id':
-                            device_id, 'message':
-                            'Device Offline (No data in 24h)', 'timestamp':
-                            now.strftime('%Y-%m-%d %H:%M:%S')}
-                        asyncio.create_task(manager.broadcast(alert_msg,
-                            client_id=row['client_id'], site_id=row['site_id'])
-                            )
-            conn.commit()
+            from app.db.connection import get_db_connection
+            conn = get_db_connection()
+            await check_offline_devices(conn)
             conn.close()
         except Exception as e:
-            logger.error(f'Watchdog error: {e}')
+            logger.error(f"Watchdog error: {e}")
         await asyncio.sleep(300)
 
 
