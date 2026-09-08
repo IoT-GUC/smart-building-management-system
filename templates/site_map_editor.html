@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Site Map & Campus Editor</title>
     <link rel="manifest" href="/manifest.json">
+    <link rel="stylesheet" href="/static/bright_theme.css">
     <meta name="theme-color" content="#08111f">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <style>
@@ -14,8 +15,8 @@
             --border: #334155;
             --accent: #3b82f6;
             --accent-hover: #2563eb;
-            --text: #f8fafc;
-            --text-muted: #94a3b8;
+            --text: #ffffff;
+            --text-muted: #cbd5e1;
             --success: #10b981;
             --warning: #f59e0b;
         }
@@ -39,11 +40,12 @@
         .header h1 {
             margin: 0;
             font-size: 26px;
+            color: #ffffff;
         }
 
         .header p {
             margin: 4px 0 0;
-            color: var(--text-muted);
+            color: #cbd5e1;
             font-size: 14px;
         }
 
@@ -93,17 +95,22 @@
 
         .control-group label {
             font-size: 13px;
-            color: var(--text-muted);
-            font-weight: 500;
+            color: #cbd5e1;
+            font-weight: 600;
         }
 
-        select, input[type="file"] {
+        select, input[type="file"], input, option {
             padding: 8px 12px;
-            background: var(--bg);
+            background: #1e293b;
             border: 1px solid var(--border);
             border-radius: 8px;
-            color: var(--text);
+            color: #ffffff !important;
             font-size: 14px;
+        }
+
+        option {
+            background-color: #1e293b !important;
+            color: #ffffff !important;
         }
 
         .main-container {
