@@ -8,15 +8,26 @@ echo ==========================================================
 echo Starting Smart Building Management System (Windows)...
 echo ==========================================================
 
-REM Check if virtual environment exists
-IF NOT EXIST "venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found! 
-    echo Please run .\windows\install.ps1 first to setup the system.
-    pause
-    exit /b
+REM Detect Python executable
+set "PYTHON_CMD="
+if exist "venv\Scripts\python.exe" (
+    set "PYTHON_CMD=venv\Scripts\python.exe"
+) else if exist ".venv\Scripts\python.exe" (
+    set "PYTHON_CMD=.venv\Scripts\python.exe"
+) else (
+    where python >nul 2>nul
+    if !errorlevel! equ 0 (
+        set "PYTHON_CMD=python"
+    )
 )
 
-REM Get the local IPv4 address
+if not defined PYTHON_CMD (
+    echo [ERROR] Python not found! Please install Python or setup virtual environment.
+    pause
+    exit /b 1
+)
+
+REM Get local IPv4 address
 for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr "IPv4 Address"') do (
     set ip=%%A
     set ip=!ip: =!
@@ -40,4 +51,4 @@ echo NOTE: If Windows Firewall asks for permission, click "Allow Access"
 echo so other devices on your network can reach the server.
 echo.
 
-.\venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+"%PYTHON_CMD%" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
