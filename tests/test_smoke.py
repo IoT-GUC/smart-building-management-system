@@ -1,9 +1,7 @@
 def test_read_main(client):
     response = client.get("/")
-    # The root endpoint should redirect to /login or /admin/home
-    assert response.status_code in (200, 302, 307)
-    if response.status_code == 200:
-        assert b"LILYGO Provisioning Server" in response.content or b"Smart Building Management Server" in response.content
+    assert response.status_code == 200
+    assert b"Login" in response.content or b"Smart Building" in response.content
 
 def test_login_page(client):
     response = client.get("/login")
