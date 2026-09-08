@@ -440,7 +440,10 @@ hr{
             <option value="multi">Multi-Sensor Node</option>
         </select>
 
-        <label>Target Building (Optional for Site Photo)</label>
+        <label>Target Site</label>
+        <select id="modalSiteSelect"></select>
+
+        <label>Target Building (Optional)</label>
         <select id="modalBuildingSelect"></select>
 
         <div class="modalActions">
@@ -672,26 +675,40 @@ function renderSiteDeviceList() {
 async function openAddDeviceModal() {
     const modal = document.getElementById("addDeviceModal");
     const status = document.getElementById("modalStatus");
+    const siteSelect = document.getElementById("modalSiteSelect");
     const bldSelect = document.getElementById("modalBuildingSelect");
+    
     status.innerText = "";
+    modal.style.display = "flex";
 
     try {
+        const sitesRes = await fetch("/sites");
+        if (sitesRes.ok) {
+            const siteList = await sitesRes.json();
+            siteSelect.innerHTML = `<option value="">Select site</option>`;
+            siteList.forEach(s => {
+                siteSelect.innerHTML += `<option value="${s.id}">${s.name || "Site " + s.id}</option>`;
+            });
+
+            const activeSiteId = document.getElementById("siteId")?.value;
+            if (activeSiteId) siteSelect.value = activeSiteId;
+        }
+
         const res = await fetch("/buildings");
-        allBuildings = await res.json();
+        if (res.ok) {
+            allBuildings = await res.json();
+            bldSelect.innerHTML = `<option value="">Select building (Optional)</option>`;
+            allBuildings.forEach(b => {
+                bldSelect.innerHTML += `<option value="${b.id}">${b.name}</option>`;
+            });
 
-        bldSelect.innerHTML = `<option value="">Select building (Optional)</option>`;
-        allBuildings.forEach(b => {
-            bldSelect.innerHTML += `<option value="${b.id}">${b.name}</option>`;
-        });
-
-        if (floorData?.building?.id) {
-            bldSelect.value = floorData.building.id;
+            if (floorData?.floor?.building_id) {
+                bldSelect.value = floorData.floor.building_id;
+            }
         }
     } catch (e) {
-        console.error("Could not load buildings for modal", e);
+        console.error("Could not load sites/buildings for modal", e);
     }
-
-    modal.style.display = "flex";
 }
 
 function closeAddDeviceModal() {
@@ -702,8 +719,8 @@ async function submitModalAddDevice() {
     const device_id = document.getElementById("modalDeviceId").value.trim();
     const label = document.getElementById("modalDeviceLabel").value.trim();
     const node_type = document.getElementById("modalNodeType").value;
+    const siteVal = document.getElementById("modalSiteSelect").value;
     const bldVal = document.getElementById("modalBuildingSelect").value;
-    const building_id = bldVal ? Number(bldVal) : null;
     const status = document.getElementById("modalStatus");
 
     if (!device_id) {
@@ -718,21 +735,24 @@ async function submitModalAddDevice() {
         node_type: node_type
     };
 
-    if (building_id) {
-        payload.building_id = building_id;
+    if (bldVal) {
+        payload.building_id = Number(bldVal);
+    }
+    if (siteVal) {
+        payload.site_id = Number(siteVal);
     }
 
     if (currentViewMode === "site") {
-        const siteId = document.getElementById("siteId").value;
-        if (siteId) payload.site_id = Number(siteId);
+        const mainSiteId = document.getElementById("siteId")?.value;
+        if (!payload.site_id && mainSiteId) payload.site_id = Number(mainSiteId);
     } else {
-        const floorId = document.getElementById("floorId").value;
-        if (floorId) payload.floor_id = Number(floorId);
+        const mainFloorId = document.getElementById("floorId")?.value;
+        if (!payload.building_id && mainFloorId) payload.floor_id = Number(mainFloorId);
     }
 
     if (!payload.building_id && !payload.floor_id && !payload.site_id) {
         status.style.color = "#fecaca";
-        status.innerText = "Please select a Target Building or ensure a Site/Floor is active.";
+        status.innerText = "Please select a Target Site or Target Building.";
         return;
     }
 
