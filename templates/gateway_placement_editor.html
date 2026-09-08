@@ -338,11 +338,48 @@ async function loadFloor() {
     drawMap();
 }
 
+async function uploadInlineFloorImage(floorId) {
+    const fileInput = document.getElementById("inlineFloorImgFile");
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+        alert("Please select an image file first.");
+        return;
+    }
+    const formData = new FormData();
+    formData.append("image", fileInput.files[0]);
+
+    try {
+        const res = await fetch(`/floors/${floorId}/upload-image`, {
+            method: "POST",
+            body: formData
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || "Upload failed");
+        }
+        alert("Floor plan image uploaded successfully!");
+        loadFloorData();
+    } catch (err) {
+        alert("Error uploading image: " + err.message);
+    }
+}
+
 function drawMap() {
     const map = document.getElementById("map");
     const floor = floorLive.floor;
 
     map.innerHTML = "";
+
+    if (!floor || !floor.image_path) {
+        map.innerHTML = `
+            <div style="padding:40px; text-align:center; background:#1e293b; border:2px dashed #334155; border-radius:12px; margin:20px;">
+                <h3 style="margin:0 0 10px; color:#f8fafc;">No Floor Plan Image Uploaded</h3>
+                <p style="color:#94a3b8; margin-bottom:16px;">Upload a floor plan image (JPG, PNG, WebP) to place gateways on this floor.</p>
+                <input type="file" id="inlineFloorImgFile" accept="image/jpeg,image/png,image/webp" style="margin-bottom:12px;"><br>
+                <button onclick="uploadInlineFloorImage(${floor ? floor.id : ''})" style="padding:8px 16px; background:#2563eb; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold;">Upload Floor Plan</button>
+            </div>
+        `;
+        return;
+    }
 
     const img = document.createElement("img");
     img.src = floor.image_path;
@@ -353,7 +390,14 @@ function drawMap() {
     };
 
     img.onerror = () => {
-        map.innerHTML = `<div style="padding:20px;">Could not load floor image: ${escapeHtml(floor.image_path)}</div>`;
+        map.innerHTML = `
+            <div style="padding:40px; text-align:center; background:#1e293b; border:2px dashed #334155; border-radius:12px; margin:20px;">
+                <h3 style="margin:0 0 10px; color:#f8fafc;">Could not load floor image</h3>
+                <p style="color:#94a3b8; margin-bottom:16px;">Path: ${escapeHtml(floor.image_path || '')}</p>
+                <input type="file" id="inlineFloorImgFile" accept="image/jpeg,image/png,image/webp" style="margin-bottom:12px;"><br>
+                <button onclick="uploadInlineFloorImage(${floor.id})" style="padding:8px 16px; background:#2563eb; color:white; border:none; border-radius:8px; cursor:pointer; font-weight:bold;">Re-upload Floor Plan</button>
+            </div>
+        `;
     };
 
     img.addEventListener("click", async function(e) {

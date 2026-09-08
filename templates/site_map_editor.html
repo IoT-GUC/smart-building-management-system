@@ -1,430 +1,494 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Device Capabilities Manager</title>
-    <link rel="manifest" href="/static/manifest.json">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Site Map & Campus Editor</title>
+    <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#08111f">
     <meta name="apple-mobile-web-app-capable" content="yes">
-
     <style>
+        :root {
+            --bg: #0f172a;
+            --panel: #1e293b;
+            --border: #334155;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+            --success: #10b981;
+            --warning: #f59e0b;
+        }
+
         body {
             margin: 0;
-            font-family: Arial, sans-serif;
-            background: #0f172a;
-            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
         }
 
         .header {
-            padding: 22px 30px;
+            padding: 20px 30px;
             background: #111827;
-            border-bottom: 1px solid #334155;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
         .header h1 {
             margin: 0;
-            font-size: 28px;
+            font-size: 26px;
         }
 
         .header p {
-            margin: 8px 0 0;
-            color: #94a3b8;
+            margin: 4px 0 0;
+            color: var(--text-muted);
+            font-size: 14px;
         }
 
-        .container {
-            padding: 30px;
+        .btn {
+            padding: 9px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 14px;
+            color: white;
+            background: var(--accent);
+            transition: background 0.2s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
         }
+
+        .btn:hover { background: var(--accent-hover); }
+
+        .btn-secondary {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            color: var(--text);
+        }
+        .btn-secondary:hover { background: #334155; }
+
+        .btn-success { background: var(--success); }
+        .btn-success:hover { background: #059669; }
 
         .toolbar {
-            margin-bottom: 20px;
+            padding: 16px 30px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--border);
             display: flex;
-            gap: 12px;
+            gap: 16px;
             align-items: center;
             flex-wrap: wrap;
         }
 
-        button {
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 10px 16px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: bold;
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
-        button:hover {
-            background: #1d4ed8;
-        }
-
-        .device-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
-            gap: 18px;
-        }
-
-        .card {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 14px;
-            padding: 20px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.25);
-        }
-
-        .card h3 {
-            margin: 0 0 6px;
-            font-size: 21px;
-        }
-
-        .meta {
-            color: #94a3b8;
+        .control-group label {
             font-size: 13px;
-            margin-bottom: 14px;
-            word-break: break-word;
+            color: var(--text-muted);
+            font-weight: 500;
         }
 
-        .status-line {
-            margin-bottom: 12px;
-            color: #e5e7eb;
+        select, input[type="file"] {
+            padding: 8px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
             font-size: 14px;
         }
 
-        .capabilities {
-            display: grid;
-            gap: 10px;
-            margin-top: 14px;
+        .main-container {
+            padding: 24px 30px;
+            max-width: 1400px;
+            margin: 0 auto;
         }
 
-        .cap-row {
+        .map-container {
+            position: relative;
+            background: #020617;
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            min-height: 500px;
             display: flex;
             align-items: center;
-            gap: 10px;
-            background: #0f172a;
-            padding: 10px;
-            border-radius: 8px;
-            border: 1px solid #334155;
+            justify-content: center;
+            box-shadow: inset 0 2px 10px rgba(0,0,0,0.5);
         }
 
-        .cap-row input {
-            width: 18px;
-            height: 18px;
+        .map-wrapper {
+            position: relative;
+            display: inline-block;
         }
 
-        .save-btn {
-            margin-top: 16px;
+        .map-wrapper img {
+            display: block;
+            max-width: 100%;
+            height: auto;
+            user-select: none;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
             width: 100%;
+            height: 100%;
+            pointer-events: auto;
+            cursor: crosshair;
         }
 
-        .badge {
+        .placeholder-box {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+
+        .placeholder-box h3 {
+            margin: 0 0 10px;
+            color: var(--text);
+            font-size: 20px;
+        }
+
+        .upload-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 16px;
             display: inline-block;
-            padding: 4px 9px;
-            border-radius: 20px;
+        }
+
+        .status-badge {
             font-size: 12px;
-            font-weight: bold;
-            margin-left: 6px;
-        }
-
-        .badge.multi {
-            background: #075985;
-            color: #bae6fd;
-        }
-
-        .badge.single {
-            background: #14532d;
-            color: #bbf7d0;
-        }
-
-        .message {
-            margin-top: 12px;
-            font-size: 13px;
-        }
-
-        .success {
-            color: #86efac;
-        }
-
-        .error {
-            color: #fecaca;
-        }
-
-        .loading {
-            color: #94a3b8;
-            padding: 30px;
-        }
-
-        .admin-home-btn {
-            display: inline-block;
-            background: #334155;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 10px 14px;
-            cursor: pointer;
-            font-weight: bold;
-            text-decoration: none;
-        }
-
-        .admin-home-btn:hover {
-            background: #475569;
+            padding: 4px 10px;
+            border-radius: 9999px;
+            background: rgba(59, 130, 246, 0.2);
+            color: var(--accent);
+            border: 1px solid rgba(59, 130, 246, 0.4);
         }
     </style>
-<link rel="stylesheet" href="/static/bright_theme.css">
 </head>
-
 <body>
-
     <div class="header">
-        <h1>Device Capabilities Manager</h1>
-        <p>Select what each node can measure or control. More than one capability automatically makes the node multi.</p>
+        <div>
+            <h1>Site Map & Campus Editor</h1>
+            <p>Upload site/campus maps and define building footprint polygons on the campus map.</p>
+        </div>
+        <div>
+            <a href="/admin/home" class="btn btn-secondary">← Back to Admin Home</a>
+        </div>
     </div>
 
-    <div class="container">
-        <div class="toolbar">
-            <button class="admin-home-btn" onclick="window.location.href='/admin'">
-                ← Admin Home
-            </button>
-
-            <button onclick="loadDevices()">
-                Refresh Devices
-            </button>
+    <div class="toolbar">
+        <div class="control-group">
+            <label for="siteSelect">Select Site:</label>
+            <select id="siteSelect" onchange="loadSiteData()"></select>
         </div>
 
-        <div id="devicesArea" class="loading">
-            Loading devices...
+        <div class="control-group">
+            <label for="siteMapFile">Upload Map:</label>
+            <input type="file" id="siteMapFile" accept="image/jpeg,image/png,image/webp">
+            <button class="btn btn-secondary" onclick="uploadSiteMap()">Upload</button>
+        </div>
+
+        <div style="height: 24px; width: 1px; background: var(--border);"></div>
+
+        <div class="control-group">
+            <label for="buildingSelect">Select Building to Draw:</label>
+            <select id="buildingSelect" onchange="selectBuilding()"></select>
+        </div>
+
+        <button id="btnDraw" class="btn" onclick="startDrawing()">Start Drawing Footprint</button>
+        <button id="btnClear" class="btn btn-secondary" onclick="clearCurrentPolygon()">Clear Points</button>
+        <button id="btnSave" class="btn btn-success" onclick="savePolygon()">Save Building Footprint</button>
+    </div>
+
+    <div class="main-container">
+        <div id="mapContainer" class="map-container">
+            <div class="placeholder-box">
+                <h3>Select a Site</h3>
+                <p>Choose a site from the dropdown menu above to edit its campus map and building polygons.</p>
+            </div>
         </div>
     </div>
 
     <script>
-        const params = new URLSearchParams(window.location.search);
-        const requestedDeviceId = params.get("device_id");
-        const capabilityOptions = [
-            { key: "environment", label: "Environment" },
-            { key: "energy", label: "Energy" },
-            { key: "safety", label: "Safety" },
-            { key: "occupancy", label: "Occupancy" }
-        ];
+        let currentSite = null;
+        let siteMapData = null;
+        let isDrawing = false;
+        let currentPoints = [];
+        let canvas = null;
+        let ctx = null;
+        let mapImg = null;
 
-        function escapeHtml(value) {
-            if(value === null || value === undefined) return "";
-            return String(value)
-                .replaceAll("&", "&amp;")
-                .replaceAll("<", "&lt;")
-                .replaceAll(">", "&gt;")
-                .replaceAll('"', "&quot;")
-                .replaceAll("'", "&#039;");
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/service-worker.js');
         }
 
-        function getCapabilitiesFromDevice(device) {
-            if(device.capabilities && Array.isArray(device.capabilities) && device.capabilities.length) {
-                return device.capabilities;
-            }
-
-            if(["environment", "energy", "safety", "occupancy"].includes(device.node_type)) {
-                return [device.node_type];
-            }
-
-            if(device.node_type === "multi") {
-                return ["environment", "energy", "safety", "occupancy"];
-            }
-
-            return [];
-        }
-
-        function buildCapabilityCheckboxes(device) {
-            const caps = getCapabilitiesFromDevice(device);
-
-            return capabilityOptions.map(cap => {
-                const checked = caps.includes(cap.key) ? "checked" : "";
-
-                return `
-                    <label class="cap-row">
-                        <input 
-                            type="checkbox" 
-                            class="cap-check"
-                            data-device-id="${escapeHtml(device.device_id)}"
-                            value="${cap.key}"
-                            ${checked}
-                        >
-                        <span>${cap.label}</span>
-                    </label>
-                `;
-            }).join("");
-        }
-
-        function nodeTypeBadge(device) {
-            const caps = getCapabilitiesFromDevice(device);
-
-            if(caps.length > 1 || device.node_type === "multi") {
-                return `<span class="badge multi">MULTI</span>`;
-            }
-
-            return `<span class="badge single">SINGLE</span>`;
-        }
-
-        async function loadDevices() {
-            const area = document.getElementById("devicesArea");
-            area.className = "loading";
-            area.innerHTML = "Loading devices...";
-
+        async function loadSites() {
             try {
-                const res = await fetch("/devices-status");
+                const res = await fetch('/sites');
+                const sites = await res.json();
+                const select = document.getElementById('siteSelect');
 
-                if(!res.ok) {
-                    throw new Error("Failed to load devices");
-                }
-
-                const devices = await res.json();
-
-                if(!devices.length) {
-                    area.innerHTML = "No devices found.";
+                if (!sites || sites.length === 0) {
+                    select.innerHTML = '<option value="">No sites found</option>';
                     return;
                 }
 
-                area.className = "device-grid";
-                area.innerHTML = "";
-
-                devices.forEach(device => {
-                    const card = document.createElement("div");
-                    card.className = "card";
-
-                    if (requestedDeviceId && String(device.device_id) === String(requestedDeviceId)) {
-                        card.style.borderColor = "#60a5fa";
-                        card.style.boxShadow = "0 0 0 2px rgba(96,165,250,0.45), 0 14px 34px rgba(0,0,0,0.35)";
-                    }
-
-                    const label = device.label || device.device_id;
-                    const status = device.telemetry?.device_status || "unknown";
-
-                    card.innerHTML = `
-                        <h3>${escapeHtml(label)} ${nodeTypeBadge(device)}</h3>
-
-                        <div class="meta">
-                            Device ID: ${escapeHtml(device.device_id)}<br>
-                            Current Type: ${escapeHtml(device.node_type || "--")}<br>
-                            Room: ${escapeHtml(device.room || "--")}<br>
-                            Floor: ${escapeHtml(device.floor || "--")}
-                        </div>
-
-                        <div class="status-line">
-                            Live Status: <b>${escapeHtml(status)}</b>
-                        </div>
-
-                        <div class="capabilities">
-                            ${buildCapabilityCheckboxes(device)}
-                        </div>
-
-                        <button class="save-btn" onclick="saveCapabilities('${escapeHtml(device.device_id)}')">
-                            Save Capabilities & Sync Formatter
-                        </button>
-                        <button class="btn" style="background:#10b981; margin-top:8px;" onclick="openTelemetryGraph('${escapeHtml(device.device_id)}', '${escapeHtml(device.name || device.device_id)}')">
-                            📉 View Device Graphs
-                        </button>
-
-                        <div id="msg-${escapeHtml(device.device_id)}" class="message"></div>
-                    `;
-
-                    area.appendChild(card);
-                    if (requestedDeviceId && String(device.device_id) === String(requestedDeviceId)) {
-                        setTimeout(() => {
-                        card.scrollIntoView({ behavior: "smooth", block: "center" });
-                        }, 200);
-                    }
-                });
-
-            } catch(err) {
-                area.className = "error";
-                area.innerHTML = "Error loading devices: " + err.message;
+                select.innerHTML = sites.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+                loadSiteData();
+            } catch (err) {
+                console.error("Failed to load sites:", err);
             }
         }
 
-        async function saveCapabilities(deviceId) {
-            const msg = document.getElementById("msg-" + deviceId);
+        async function loadSiteData() {
+            const siteId = document.getElementById('siteSelect').value;
+            if (!siteId) return;
 
-            const checks = document.querySelectorAll(
-                `.cap-check[data-device-id="${deviceId}"]:checked`
-            );
+            const container = document.getElementById('mapContainer');
+            container.innerHTML = '<div class="placeholder-box"><p>Loading site map...</p></div>';
 
-            const capabilities = Array.from(checks).map(c => c.value);
+            try {
+                const res = await fetch(`/sites/${siteId}/map`);
+                if (!res.ok) throw new Error("Site map data not found");
+                siteMapData = await res.json();
+                currentSite = siteMapData.site;
 
-            if (!capabilities.length) {
-                msg.className = "message error";
-                msg.innerHTML = "Select at least one capability.";
+                populateBuildingSelect();
+
+                if (!currentSite.campus_image_path) {
+                    container.innerHTML = `
+                        <div class="placeholder-box">
+                            <h3>No Campus Map Uploaded for ${currentSite.name}</h3>
+                            <p>Select an image file (JPG, PNG, WebP) in the toolbar above and click <strong>Upload</strong>.</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                renderMap();
+            } catch (err) {
+                container.innerHTML = `<div class="placeholder-box" style="color: var(--text-muted);"><p>${err.message}</p></div>`;
+            }
+        }
+
+        function populateBuildingSelect() {
+            const select = document.getElementById('buildingSelect');
+            if (!siteMapData || !siteMapData.buildings || siteMapData.buildings.length === 0) {
+                select.innerHTML = '<option value="">No buildings in site</option>';
+                return;
+            }
+            select.innerHTML = siteMapData.buildings.map(b => `<option value="${b.id}">${b.name}</option>`).join('');
+            selectBuilding();
+        }
+
+        function selectBuilding() {
+            const buildingId = parseInt(document.getElementById('buildingSelect').value);
+            if (!siteMapData || !siteMapData.buildings) return;
+            const b = siteMapData.buildings.find(x => x.id === buildingId);
+            if (b && b.polygon_points && Array.isArray(b.polygon_points) && b.polygon_points.length >= 3) {
+                currentPoints = [...b.polygon_points];
+            } else {
+                currentPoints = [];
+            }
+            redrawCanvas();
+        }
+
+        function renderMap() {
+            const container = document.getElementById('mapContainer');
+            container.innerHTML = `
+                <div class="map-wrapper" id="mapWrapper">
+                    <img id="siteImg" src="${currentSite.campus_image_path}" alt="Site Map">
+                    <canvas id="mapCanvas"></canvas>
+                </div>
+            `;
+
+            mapImg = document.getElementById('siteImg');
+            canvas = document.getElementById('mapCanvas');
+            ctx = canvas.getContext('2d');
+
+            mapImg.onload = () => {
+                canvas.width = mapImg.clientWidth;
+                canvas.height = mapImg.clientHeight;
+                redrawCanvas();
+            };
+
+            canvas.onclick = (e) => {
+                if (!isDrawing) return;
+                const rect = canvas.getBoundingClientRect();
+                const scaleX = mapImg.naturalWidth / rect.width;
+                const scaleY = mapImg.naturalHeight / rect.height;
+
+                const x = Math.round((e.clientX - rect.left) * scaleX);
+                const y = Math.round((e.clientY - rect.top) * scaleY);
+
+                currentPoints.push({ x, y });
+                redrawCanvas();
+            };
+
+            window.onresize = () => {
+                if (mapImg && canvas) {
+                    canvas.width = mapImg.clientWidth;
+                    canvas.height = mapImg.clientHeight;
+                    redrawCanvas();
+                }
+            };
+        }
+
+        function startDrawing() {
+            isDrawing = true;
+            currentPoints = [];
+            document.getElementById('btnDraw').innerText = "Click on Map to Add Points";
+            document.getElementById('btnDraw').classList.add('btn-success');
+            redrawCanvas();
+        }
+
+        function clearCurrentPolygon() {
+            currentPoints = [];
+            isDrawing = false;
+            document.getElementById('btnDraw').innerText = "Start Drawing Footprint";
+            document.getElementById('btnDraw').classList.remove('btn-success');
+            redrawCanvas();
+        }
+
+        function redrawCanvas() {
+            if (!canvas || !ctx || !mapImg) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const scaleX = canvas.width / (mapImg.naturalWidth || canvas.width);
+            const scaleY = canvas.height / (mapImg.naturalHeight || canvas.height);
+
+            // Draw existing buildings
+            if (siteMapData && siteMapData.buildings) {
+                const activeBuildingId = parseInt(document.getElementById('buildingSelect').value);
+                siteMapData.buildings.forEach(b => {
+                    if (b.id === activeBuildingId && currentPoints.length > 0) return; // Will draw currentPoints
+                    if (b.polygon_points && b.polygon_points.length >= 3) {
+                        drawPolygon(b.polygon_points, scaleX, scaleY, "rgba(59, 130, 246, 0.3)", "#3b82f6", b.name);
+                    }
+                });
+            }
+
+            // Draw current active drawing polygon
+            if (currentPoints.length > 0) {
+                drawPolygon(currentPoints, scaleX, scaleY, "rgba(16, 185, 129, 0.4)", "#10b981", "Drawing...");
+            }
+        }
+
+        function drawPolygon(points, scaleX, scaleY, fillColor, strokeColor, label) {
+            if (points.length === 0) return;
+            ctx.beginPath();
+            ctx.moveTo(points[0].x * scaleX, points[0].y * scaleY);
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i].x * scaleX, points[i].y * scaleY);
+            }
+            if (points.length >= 3) ctx.closePath();
+
+            ctx.fillStyle = fillColor;
+            ctx.fill();
+            ctx.strokeStyle = strokeColor;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Draw points
+            points.forEach(p => {
+                ctx.beginPath();
+                ctx.arc(p.x * scaleX, p.y * scaleY, 4, 0, 2 * Math.PI);
+                ctx.fillStyle = strokeColor;
+                ctx.fill();
+            });
+
+            // Draw Label
+            if (label && points.length >= 3) {
+                const avgX = points.reduce((sum, p) => sum + p.x, 0) / points.length * scaleX;
+                const avgY = points.reduce((sum, p) => sum + p.y, 0) / points.length * scaleY;
+                ctx.font = "bold 13px sans-serif";
+                ctx.fillStyle = "#ffffff";
+                ctx.textAlign = "center";
+                ctx.fillText(label, avgX, avgY);
+            }
+        }
+
+        async function savePolygon() {
+            const buildingId = document.getElementById('buildingSelect').value;
+            if (!buildingId) {
+                alert("Please select a building.");
+                return;
+            }
+            if (currentPoints.length < 3) {
+                alert("A polygon requires at least 3 points. Click on the map to add points.");
                 return;
             }
 
             try {
-
-                msg.className = "message loading";
-                msg.innerHTML = "Saving capabilities and syncing TTN formatter...";
-
-                const res = await fetch(`/devices/${deviceId}/capabilities`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({
-                        capabilities: capabilities
-                    })
+                const res = await fetch(`/buildings/${buildingId}/polygon`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ polygon_points: currentPoints })
                 });
-
-                const data = await res.json();
 
                 if (!res.ok) {
-                    throw new Error(data.detail || "Failed to save capabilities");
+                    const err = await res.json();
+                    throw new Error(err.detail || "Failed to save polygon");
                 }
 
-                const syncRes = await fetch(`/devices/${deviceId}/sync-formatter`, {
-                    method: "POST"
-                });
-
-                const syncData = await syncRes.json();
-
-                if (!syncRes.ok) {
-                    msg.className = "message error";
-                    msg.innerHTML =
-                        `Capabilities saved. Node type is now: ${data.node_type}. ` +
-                        `But formatter sync failed: ${syncData.detail || "Unknown error"}`;
-                    return;
-                }
-
-                msg.className = "message success";
-                msg.innerHTML =
-                    `Saved successfully. Node type is now: ${data.node_type}. ` +
-                    `TTN formatter synced.`;
-
-                
-
+                alert("Building footprint polygon saved successfully!");
+                isDrawing = false;
+                document.getElementById('btnDraw').innerText = "Start Drawing Footprint";
+                document.getElementById('btnDraw').classList.remove('btn-success');
+                loadSiteData();
             } catch (err) {
-                msg.className = "message error";
-                msg.innerHTML = "Error: " + err.message;
+                alert("Error: " + err.message);
             }
         }
 
-        document.addEventListener("DOMContentLoaded", loadDevices);
+        async function uploadSiteMap() {
+            const siteId = document.getElementById('siteSelect').value;
+            const fileInput = document.getElementById('siteMapFile');
+            if (!siteId) {
+                alert("Select a site first.");
+                return;
+            }
+            if (!fileInput.files || fileInput.files.length === 0) {
+                alert("Select an image file to upload.");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('image', fileInput.files[0]);
+
+            try {
+                const res = await fetch(`/sites/${siteId}/upload-site-map`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || "Failed to upload image");
+                }
+
+                alert("Site map image uploaded successfully!");
+                fileInput.value = '';
+                loadSiteData();
+            } catch (err) {
+                alert("Upload failed: " + err.message);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', loadSites);
     </script>
-
-<script src="/static/help_system.js"></script>
-
-<!-- UX Systems -->
-<link href="https://cdnjs.cloudflare.com/ajax/libs/intro.js/7.2.0/introjs.min.css" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/intro.js/7.2.0/intro.min.js"></script>
-<script src="/static/onboarding_tour.js"></script>
-<script src="/static/search_system.js"></script>
-<script src="/static/realtime_toasts.js"></script>
-
-<!-- Chart.js & Graphs System -->
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="/static/graphs.js"></script>
-<script src="/static/generate_firmware.js"></script>
-<script>
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js');
-  });
-}
-</script>
-<script src="/static/analytics_widget.js"></script>
 </body>
-
-
 </html>
-    

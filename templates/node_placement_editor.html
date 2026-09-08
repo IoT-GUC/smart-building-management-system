@@ -373,6 +373,11 @@ async function loadFloor(){
     const res = await fetch(`/floors/${floorId}/live`);
     floorData = await res.json();
 
+    if (!floorData.floor || !floorData.floor.image_path) {
+        alert("No floor plan image has been uploaded for this floor yet.");
+        return;
+    }
+
     image.src = floorData.floor.image_path;
 
     image.onload = function(){
