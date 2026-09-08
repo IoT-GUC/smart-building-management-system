@@ -11,7 +11,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         const data = await res.json();
         
         const widgets = [
-            { title: "🟢 Active Devices", value: data.total_devices ?? 0, color: "#10b981" },
+            { title: "🟢 Active Devices", value: (data.active_devices !== undefined ? data.active_devices : (data.online_devices ?? 0)), color: "#10b981" },
             { title: "📡 Gateways", value: data.total_gateways ?? 0, color: "#3b82f6" },
             { title: "🔴 Offline Devices", value: data.offline_devices ?? 0, color: (data.offline_devices ?? 0) > 0 ? "#ef4444" : "#94a3b8" },
             { title: "⚠️ Alarms Today", value: data.alarms_today ?? 0, color: (data.alarms_today ?? 0) > 0 ? "#f59e0b" : "#94a3b8" }

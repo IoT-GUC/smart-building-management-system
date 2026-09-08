@@ -95,30 +95,53 @@ def floor_map_data(building: str, floor: str):
         conn.close()
 @router.get("/api/analytics")
 def get_analytics():
+    from datetime import datetime, timezone
+    from app.main import parse_datetime_safe
+
     conn = db()
     try:
+        device_rows = conn.execute("SELECT device_id FROM devices").fetchall()
+        total_devices = len(device_rows)
+        online_devices = 0
+        offline_devices = 0
+
+        now_utc = datetime.now(timezone.utc)
+
+        for row in device_rows:
+            dev_id = row["device_id"]
+            telem = conn.execute("""
+                SELECT updated_at, alarm_message
+                FROM device_latest_telemetry
+                WHERE device_id = ?
+            """, (dev_id,)).fetchone()
+
+            is_online = False
+            if telem and telem["updated_at"]:
+                updated_dt = parse_datetime_safe(telem["updated_at"])
+                if updated_dt:
+                    seconds_ago = (now_utc - updated_dt).total_seconds()
+                    if 0 <= seconds_ago <= 300 and (telem["alarm_message"] or "").upper() != "OFFLINE":
+                        is_online = True
+
+            if is_online:
+                online_devices += 1
+            else:
+                offline_devices += 1
+
         cursor = conn.cursor()
-    
-        # Active devices
-        cursor.execute("SELECT COUNT(*) as c FROM devices")
-        total_devices = cursor.fetchone()['c']
-    
-        # Offline devices
-        cursor.execute("SELECT COUNT(*) as c FROM device_latest_telemetry WHERE alarm_message = 'OFFLINE'")
-        offline_devices = cursor.fetchone()['c']
-    
+
         # Gateways
         cursor.execute("SELECT COUNT(*) as c FROM gateways")
         total_gateways = cursor.fetchone()['c']
-    
+
         # Alarms today
         cursor.execute("SELECT COUNT(*) as c FROM alarm_history WHERE datetime(triggered_at) >= datetime('now', 'start of day')")
         alarms_today = cursor.fetchone()['c']
-    
-        conn.close()
-    
+
         return {
             "total_devices": total_devices,
+            "active_devices": online_devices,
+            "online_devices": online_devices,
             "offline_devices": offline_devices,
             "total_gateways": total_gateways,
             "alarms_today": alarms_today
