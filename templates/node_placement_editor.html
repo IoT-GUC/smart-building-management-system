@@ -267,7 +267,78 @@ option {
 hr{
     border:none;
     border-top:1px solid #334155;
-    margin:16px 0;
+.addDeviceBtn{
+    background:#16a34a !important;
+    color:white !important;
+}
+
+.addDeviceBtn:hover{
+    background:#15803d !important;
+}
+
+.modalOverlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(15, 23, 42, 0.85);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+.modalCard {
+    background: #111827;
+    border: 1px solid #334155;
+    border-radius: 18px;
+    padding: 24px;
+    width: 450px;
+    max-width: calc(100vw - 32px);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    color: white;
+}
+
+.modalCard h3 {
+    margin-top: 0;
+    color: #f8fafc;
+    font-size: 20px;
+}
+
+.modalCard label {
+    display: block;
+    margin-top: 12px;
+    margin-bottom: 4px;
+    color: #cbd5e1;
+    font-weight: bold;
+    font-size: 13px;
+}
+
+.modalCard input, .modalCard select {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #334155;
+    background: #020617;
+    color: white;
+    box-sizing: border-box;
+}
+
+.modalActions {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+}
+
+.modalActions button {
+    flex: 1;
+    padding: 11px;
+    border-radius: 8px;
+    border: none;
+    font-weight: bold;
+    cursor: pointer;
 }
 </style>
 <link rel="stylesheet" href="/static/bright_theme.css">
@@ -277,7 +348,7 @@ hr{
 
 <div class="header">
     <h1>Node Placement Editor</h1>
-    <p>Drag devices on the floor map, assign them to rooms, and save their final positions.</p>
+    <p>View floor plans or site photos, add devices directly to maps, drag nodes to position, and save location coordinates.</p>
 </div>
 
 <div class="toolbar">
@@ -285,9 +356,27 @@ hr{
         ← Admin Home
     </button>
 
-    <label>Floor:</label>
-    <select id="floorId" onchange="loadFloor()"></select>
+    <label>View Mode:</label>
+    <select id="viewModeSelect" onchange="toggleViewMode()">
+        <option value="floor">Floor Plan View</option>
+        <option value="site">Site / Campus Photo View</option>
+    </select>
+
+    <span id="floorControlGroup">
+        <label>Floor:</label>
+        <select id="floorId" onchange="loadFloor()"></select>
+    </span>
+
+    <span id="siteControlGroup" style="display:none;">
+        <label>Site / Campus:</label>
+        <select id="siteId" onchange="loadSiteMap()"></select>
+    </span>
+
+    <button class="addDeviceBtn" onclick="openAddDeviceModal()">
+        + Add New Device
+    </button>
 </div>
+
 <div class="layout">
 
     <div class="mapArea">
@@ -299,7 +388,10 @@ hr{
     </div>
 
     <div class="sidePanel">
-        <h2>Node Placement</h2>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h2 style="margin:0;">Node Placement</h2>
+            <button class="addDeviceBtn" style="padding:6px 10px; font-size:12px;" onclick="openAddDeviceModal()">+ Add Device</button>
+        </div>
 
         <h3>Devices</h3>
         <div id="deviceList"></div>
@@ -309,23 +401,60 @@ hr{
         <label>Selected Device</label>
         <input id="selectedDeviceName" readonly>
 
-        <label>Assign To Room</label>
-        <select id="roomSelect"></select>
+        <span id="roomAssignmentSection">
+            <label>Assign To Room</label>
+            <select id="roomSelect"></select>
+            <button onclick="assignToRoom()">Assign To Room Center</button>
+        </span>
 
-        <button onclick="assignToRoom()">Assign To Room Center</button>
         <button class="saveBtn" onclick="savePosition()">Save Current Position</button>
-        <button class="resetBtn" onclick="resetToRoomCenter()">Reset To Room Center</button>
+        <button class="resetBtn" id="resetPositionBtn" onclick="resetToRoomCenter()">Reset To Center</button>
 
-        <p class="hint">
+        <p class="hint" id="modeHint">
             Drag node on the map, then press Save Current Position.
-            If no position exists, node appears at room center.
         </p>
     </div>
 
 </div>
 
+<!-- Modal Dialog: Add Device Directly -->
+<div id="addDeviceModal" class="modalOverlay" style="display:none;">
+    <div class="modalCard">
+        <h3>+ Add New Device to Map</h3>
+        
+        <label>Device ID *</label>
+        <input id="modalDeviceId" placeholder="Example: ENV-NODE-105">
+
+        <label>Label / Friendly Name</label>
+        <input id="modalDeviceLabel" placeholder="Example: Main Lobby Temp Sensor">
+
+        <label>Node Type</label>
+        <select id="modalNodeType">
+            <option value="environment">Environment (Temp/Humid/CO2/IAQ)</option>
+            <option value="energy">Energy (Power/Current/Voltage)</option>
+            <option value="safety">Safety (Smoke/Gas/Water Leak)</option>
+            <option value="occupancy">Occupancy (Motion/Presence/PIR)</option>
+            <option value="multi">Multi-Sensor Node</option>
+        </select>
+
+        <label>Target Building *</label>
+        <select id="modalBuildingSelect"></select>
+
+        <div class="modalActions">
+            <button class="addDeviceBtn" onclick="submitModalAddDevice()">Create & Add Device</button>
+            <button class="resetBtn" onclick="closeAddDeviceModal()">Cancel</button>
+        </div>
+
+        <div id="modalStatus" style="margin-top:12px; font-size:13px;"></div>
+    </div>
+</div>
+
 <script>
+let currentViewMode = "floor"; // "floor" or "site"
 let floorData = null;
+let siteData = null;
+let siteDevices = [];
+let allBuildings = [];
 let selectedDevice = null;
 let selectedNodeEl = null;
 let dragging = false;
@@ -344,17 +473,269 @@ function iconFor(type){
 }
 
 function originalToDisplay(p){
+    const origWidth = (currentViewMode === "site" && siteData) ? (siteData.image_width || 1200) : (floorData?.floor?.image_width || 1000);
+    const origHeight = (currentViewMode === "site" && siteData) ? (siteData.image_height || 800) : (floorData?.floor?.image_height || 800);
     return {
-        x: p.x * image.clientWidth / floorData.floor.image_width,
-        y: p.y * image.clientHeight / floorData.floor.image_height
+        x: p.x * image.clientWidth / origWidth,
+        y: p.y * image.clientHeight / origHeight
     };
 }
 
 function displayToOriginal(x, y){
+    const origWidth = (currentViewMode === "site" && siteData) ? (siteData.image_width || 1200) : (floorData?.floor?.image_width || 1000);
+    const origHeight = (currentViewMode === "site" && siteData) ? (siteData.image_height || 800) : (floorData?.floor?.image_height || 800);
     return {
-        x: Math.round(x * floorData.floor.image_width / image.clientWidth),
-        y: Math.round(y * floorData.floor.image_height / image.clientHeight)
+        x: Math.round(x * origWidth / image.clientWidth),
+        y: Math.round(y * origHeight / image.clientHeight)
     };
+}
+
+function toggleViewMode() {
+    currentViewMode = document.getElementById("viewModeSelect").value;
+    const floorGroup = document.getElementById("floorControlGroup");
+    const siteGroup = document.getElementById("siteControlGroup");
+    const roomSection = document.getElementById("roomAssignmentSection");
+    const resetBtn = document.getElementById("resetPositionBtn");
+    const modeHint = document.getElementById("modeHint");
+
+    if (currentViewMode === "site") {
+        floorGroup.style.display = "none";
+        siteGroup.style.display = "inline";
+        roomSection.style.display = "none";
+        if (resetBtn) resetBtn.style.display = "none";
+        modeHint.innerText = "Drag device on the site map photo, then press Save Current Position.";
+        loadSiteDropdown();
+    } else {
+        floorGroup.style.display = "inline";
+        siteGroup.style.display = "none";
+        roomSection.style.display = "block";
+        if (resetBtn) resetBtn.style.display = "block";
+        modeHint.innerText = "Drag node on the floor map, then press Save Current Position.";
+        loadFloor();
+    }
+}
+
+async function loadSiteDropdown() {
+    const select = document.getElementById("siteId");
+    try {
+        const res = await fetch("/sites");
+        const sites = await res.json();
+
+        select.innerHTML = `<option value="">Select site</option>`;
+        sites.forEach(s => {
+            select.innerHTML += `<option value="${s.id}">${s.name || "Site " + s.id}</option>`;
+        });
+
+        const params = new URLSearchParams(window.location.search);
+        const reqSiteId = params.get("site_id");
+
+        if (reqSiteId && sites.some(s => String(s.id) === String(reqSiteId))) {
+            select.value = reqSiteId;
+        } else if (sites.length > 0) {
+            select.value = sites[0].id;
+        }
+
+        if (select.value) {
+            await loadSiteMap();
+        }
+    } catch (e) {
+        console.error("Could not load sites", e);
+    }
+}
+
+async function loadSiteMap() {
+    const siteId = document.getElementById("siteId").value;
+    if (!siteId) return;
+
+    selectedDevice = null;
+    selectedNodeEl = null;
+    dragDevice = null;
+
+    document.getElementById("selectedDeviceName").value = "";
+    document.getElementById("deviceList").innerHTML = "";
+    nodesLayer.innerHTML = "";
+    overlay.innerHTML = "";
+
+    try {
+        const mapRes = await fetch(`/sites/${siteId}/map`);
+        siteData = await mapRes.json();
+
+        const devRes = await fetch(`/sites/${siteId}/devices`);
+        siteDevices = await devRes.json();
+
+        const imagePath = siteData.campus_image_path || siteData.image_path;
+        if (!imagePath) {
+            alert("No site map photo has been uploaded for this site yet.");
+            return;
+        }
+
+        image.src = imagePath;
+
+        image.onload = function() {
+            overlay.setAttribute("width", image.clientWidth);
+            overlay.setAttribute("height", image.clientHeight);
+            drawSiteBuildings();
+            drawSiteNodes();
+            renderSiteDeviceList();
+        };
+
+        if (image.complete) {
+            drawSiteBuildings();
+            drawSiteNodes();
+            renderSiteDeviceList();
+        }
+    } catch (err) {
+        alert("Error loading site map: " + err.message);
+    }
+}
+
+function drawSiteBuildings() {
+    overlay.innerHTML = "";
+    if (!siteData || !siteData.buildings) return;
+
+    siteData.buildings.forEach(b => {
+        if (!b.polygon_points || b.polygon_points.length < 3) return;
+
+        const pts = b.polygon_points.map(originalToDisplay);
+        const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        poly.setAttribute("points", pts.map(p => `${p.x},${p.y}`).join(" "));
+        poly.setAttribute("class", "roomPolygon");
+        overlay.appendChild(poly);
+
+        if (b.center_x && b.center_y) {
+            const center = originalToDisplay({x: b.center_x, y: b.center_y});
+            const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            label.setAttribute("x", center.x);
+            label.setAttribute("y", center.y);
+            label.setAttribute("class", "roomLabel");
+            label.textContent = b.name;
+            overlay.appendChild(label);
+        }
+    });
+}
+
+function drawSiteNodes() {
+    nodesLayer.innerHTML = "";
+    siteDevices.forEach(device => {
+        const node = document.createElement("div");
+
+        const px = device.x || 100;
+        const py = device.y || 100;
+        const pos = originalToDisplay({x: px, y: py});
+
+        node.className = "node";
+        node.style.left = pos.x + "px";
+        node.style.top = pos.y + "px";
+        node.innerText = iconFor(device.node_type) + " " + (device.label || device.device_id);
+
+        node.onmousedown = function(e) {
+            e.preventDefault();
+            selectDevice(device, node);
+            dragging = true;
+            dragDevice = device;
+            node.style.cursor = "grabbing";
+        };
+
+        node.onclick = function(e) {
+            e.stopPropagation();
+            selectDevice(device, node);
+        };
+
+        nodesLayer.appendChild(node);
+    });
+}
+
+function renderSiteDeviceList() {
+    const list = document.getElementById("deviceList");
+    list.innerHTML = "";
+
+    siteDevices.forEach(device => {
+        const div = document.createElement("div");
+        div.className = "deviceItem" + (selectedDevice && selectedDevice.device_id === device.device_id ? " active" : "");
+        div.innerText = iconFor(device.node_type) + " " + (device.label || device.device_id);
+
+        div.onclick = function() {
+            selectedDevice = device;
+            document.getElementById("selectedDeviceName").value = device.label || device.device_id;
+            renderSiteDeviceList();
+        };
+
+        list.appendChild(div);
+    });
+}
+
+async function openAddDeviceModal() {
+    const modal = document.getElementById("addDeviceModal");
+    const status = document.getElementById("modalStatus");
+    const bldSelect = document.getElementById("modalBuildingSelect");
+    status.innerText = "";
+
+    try {
+        const res = await fetch("/buildings");
+        allBuildings = await res.json();
+
+        bldSelect.innerHTML = `<option value="">Select building</option>`;
+        allBuildings.forEach(b => {
+            bldSelect.innerHTML += `<option value="${b.id}">${b.name}</option>`;
+        });
+    } catch (e) {
+        console.error("Could not load buildings for modal", e);
+    }
+
+    modal.style.display = "flex";
+}
+
+function closeAddDeviceModal() {
+    document.getElementById("addDeviceModal").style.display = "none";
+}
+
+async function submitModalAddDevice() {
+    const device_id = document.getElementById("modalDeviceId").value.trim();
+    const label = document.getElementById("modalDeviceLabel").value.trim();
+    const node_type = document.getElementById("modalNodeType").value;
+    const building_id = Number(document.getElementById("modalBuildingSelect").value);
+    const status = document.getElementById("modalStatus");
+
+    if (!device_id || !building_id) {
+        status.style.color = "#fecaca";
+        status.innerText = "Device ID and Target Building are required.";
+        return;
+    }
+
+    try {
+        status.style.color = "#93c5fd";
+        status.innerText = "Creating device...";
+
+        const res = await fetch("/devices", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({device_id, label, node_type, building_id})
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.detail || "Failed to create device");
+        }
+
+        status.style.color = "#86efac";
+        status.innerText = `Device '${device_id}' added successfully!`;
+
+        setTimeout(async () => {
+            closeAddDeviceModal();
+            document.getElementById("modalDeviceId").value = "";
+            document.getElementById("modalDeviceLabel").value = "";
+
+            if (currentViewMode === "site") {
+                await loadSiteMap();
+            } else {
+                await loadFloor();
+            }
+        }, 500);
+
+    } catch (err) {
+        status.style.color = "#fecaca";
+        status.innerText = err.message;
+    }
 }
 
 async function loadFloor(){
@@ -404,6 +785,7 @@ async function loadFloor(){
 
 function allDevices(){
     let devices = [];
+    if (!floorData || !floorData.rooms) return devices;
 
     floorData.rooms.forEach(room => {
         room.devices.forEach(device => {
@@ -417,6 +799,7 @@ function allDevices(){
 
 function drawRooms(){
     overlay.innerHTML = "";
+    if (!floorData || !floorData.rooms) return;
 
     floorData.rooms.forEach(room => {
         if(!room.polygon_points || room.polygon_points.length < 3) return;
@@ -518,10 +901,13 @@ function selectDevice(device, nodeEl){
     document.getElementById("selectedDeviceName").value =
         device.label || device.device_id;
 
-    document.getElementById("roomSelect").value =
-        device.room_id || "";
-        
-    renderDeviceList();
+    if (currentViewMode === "floor") {
+        document.getElementById("roomSelect").value =
+            device.room_id || "";
+        renderDeviceList();
+    } else {
+        renderSiteDeviceList();
+    }
 }
 
 function renderDeviceList(){
@@ -554,6 +940,7 @@ function renderDeviceList(){
 function renderRoomSelect(){
     const select = document.getElementById("roomSelect");
     select.innerHTML = "";
+    if (!floorData || !floorData.rooms) return;
 
     floorData.rooms.forEach(room => {
         const opt = document.createElement("option");
@@ -569,7 +956,7 @@ async function savePosition(){
         return;
     }
 
-    const roomId = document.getElementById("roomSelect").value;
+    const roomId = currentViewMode === "floor" ? document.getElementById("roomSelect").value : null;
 
     const res = await fetch(`/devices/${selectedDevice.device_id}/position`, {
         method:"PUT",
@@ -592,7 +979,11 @@ async function savePosition(){
 
     alert("Device position saved");
 
-    await loadFloor();
+    if (currentViewMode === "site") {
+        await loadSiteMap();
+    } else {
+        await loadFloor();
+    }
 }
 
 function getRoomById(roomId){

@@ -596,6 +596,37 @@ def get_building_devices(building_id: int):
         conn.close()
 
 
+@router.get("/sites/{site_id}/devices")
+def get_site_devices(site_id: int):
+    conn = db()
+    try:
+        site = conn.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+        if not site:
+            raise HTTPException(status_code=404, detail=f"Site with ID {site_id} not found")
+
+        rows = conn.execute("""
+            SELECT 
+                d.*,
+                r.room_name as room,
+                f.name as floor,
+                b.name as building,
+                s.name as site
+            FROM devices d
+            LEFT JOIN rooms r ON d.room_id = r.id
+            LEFT JOIN floors f ON d.floor_id = f.id OR r.floor_id = f.id
+            LEFT JOIN buildings b ON d.building_id = b.id OR f.building_id = b.id
+            LEFT JOIN sites s ON d.site_id = s.id OR b.site_id = s.id
+            WHERE d.site_id = ? OR b.site_id = ? OR s.id = ?
+            GROUP BY d.device_id
+            ORDER BY COALESCE(d.label, d.device_id)
+        """, (site_id, site_id, site_id)).fetchall()
+
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+
 @router.put("/devices/{device_id}/assign-room")
 def assign_device_to_room(device_id: str, data: dict):
     room_id = data.get("room_id")
