@@ -26,7 +26,7 @@ def root(request: Request):
         if user:
             role = (user.get("role") or "").lower()
             if role == "client":
-                return RedirectResponse(url=f"/client-portal?user_id={user['id']}", status_code=302)
+                return templates.TemplateResponse(request, "client_portal_page.html", {"user": user})
             return templates.TemplateResponse(request, "admin_home_page.html", {})
         
         return templates.TemplateResponse(request, "login_page.html", {})
