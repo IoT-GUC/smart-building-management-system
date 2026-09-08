@@ -1288,6 +1288,22 @@ def get_site_map(site_id: int):
                 detail="Site not found"
             )
 
+        site_dict = dict(site)
+
+        # Fallback to site_maps table if campus_image_path is not populated on sites row
+        if not site_dict.get("campus_image_path"):
+            latest_map = conn.execute("""
+                SELECT image_path, image_width, image_height
+                FROM site_maps
+                WHERE site_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+            """, (site_id,)).fetchone()
+            if latest_map:
+                site_dict["campus_image_path"] = latest_map["image_path"]
+                site_dict["image_width"] = latest_map["image_width"]
+                site_dict["image_height"] = latest_map["image_height"]
+
         buildings = conn.execute("""
         SELECT *
         FROM buildings
@@ -1297,8 +1313,13 @@ def get_site_map(site_id: int):
 
         conn.close()
 
+        img_path = site_dict.get("campus_image_path")
         result = {
-            "site": dict(site),
+            "site": site_dict,
+            "campus_image_path": img_path,
+            "image_path": img_path,
+            "image_width": site_dict.get("image_width"),
+            "image_height": site_dict.get("image_height"),
             "buildings": []
         }
 

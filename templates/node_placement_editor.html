@@ -473,8 +473,9 @@ function iconFor(type){
 }
 
 function originalToDisplay(p){
-    const origWidth = (currentViewMode === "site" && siteData) ? (siteData.image_width || 1200) : (floorData?.floor?.image_width || 1000);
-    const origHeight = (currentViewMode === "site" && siteData) ? (siteData.image_height || 800) : (floorData?.floor?.image_height || 800);
+    const s = siteData?.site || siteData;
+    const origWidth = (currentViewMode === "site" && siteData) ? (s?.image_width || siteData?.image_width || 1200) : (floorData?.floor?.image_width || 1000);
+    const origHeight = (currentViewMode === "site" && siteData) ? (s?.image_height || siteData?.image_height || 800) : (floorData?.floor?.image_height || 800);
     return {
         x: p.x * image.clientWidth / origWidth,
         y: p.y * image.clientHeight / origHeight
@@ -482,8 +483,9 @@ function originalToDisplay(p){
 }
 
 function displayToOriginal(x, y){
-    const origWidth = (currentViewMode === "site" && siteData) ? (siteData.image_width || 1200) : (floorData?.floor?.image_width || 1000);
-    const origHeight = (currentViewMode === "site" && siteData) ? (siteData.image_height || 800) : (floorData?.floor?.image_height || 800);
+    const s = siteData?.site || siteData;
+    const origWidth = (currentViewMode === "site" && siteData) ? (s?.image_width || siteData?.image_width || 1200) : (floorData?.floor?.image_width || 1000);
+    const origHeight = (currentViewMode === "site" && siteData) ? (s?.image_height || siteData?.image_height || 800) : (floorData?.floor?.image_height || 800);
     return {
         x: Math.round(x * origWidth / image.clientWidth),
         y: Math.round(y * origHeight / image.clientHeight)
@@ -563,7 +565,7 @@ async function loadSiteMap() {
         const devRes = await fetch(`/sites/${siteId}/devices`);
         siteDevices = await devRes.json();
 
-        const imagePath = siteData.campus_image_path || siteData.image_path;
+        const imagePath = siteData.campus_image_path || siteData.image_path || siteData.site?.campus_image_path || siteData.site?.image_path;
         if (!imagePath) {
             alert("No site map photo has been uploaded for this site yet.");
             return;
