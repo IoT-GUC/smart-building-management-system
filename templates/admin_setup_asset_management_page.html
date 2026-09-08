@@ -728,6 +728,76 @@
             <div id="deviceAssignStatus" class="status"></div>
         </div>
 
+        <div class="card full">
+            <div class="card-header-line">
+                <h2>Devices & Building Placement</h2>
+                <span class="pill">ADD TO BUILDING / FLOOR / ROOM</span>
+            </div>
+            <div class="muted">Add new IoT devices directly to a building, or reassign existing devices to specific buildings, floors, and rooms.</div>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 24px;">
+                <!-- Add New Device to Building -->
+                <div>
+                    <h3 style="color:#93c5fd; margin-top:0;">+ Add Device to Building</h3>
+                    
+                    <label>Device ID *</label>
+                    <input id="newDeviceId" placeholder="Example: ENV-NODE-101">
+
+                    <label>Label / Friendly Name</label>
+                    <input id="newDeviceLabel" placeholder="Example: Room 101 Temp & Humidity">
+
+                    <label>Node Type</label>
+                    <select id="newDeviceNodeType">
+                        <option value="environment">Environment (Temp/Humid/CO2/IAQ)</option>
+                        <option value="energy">Energy (Power/Current/Voltage)</option>
+                        <option value="safety">Safety (Smoke/Gas/Water Leak)</option>
+                        <option value="occupancy">Occupancy (Motion/Presence/PIR)</option>
+                        <option value="multi">Multi-Sensor Node</option>
+                    </select>
+
+                    <label>Target Building *</label>
+                    <select id="newDeviceBuildingSelect" onchange="loadFloorsForNewDevice()"></select>
+
+                    <label>Target Floor (Optional)</label>
+                    <select id="newDeviceFloorSelect" onchange="loadRoomsForNewDevice()"></select>
+
+                    <label>Target Room (Optional)</label>
+                    <select id="newDeviceRoomSelect"></select>
+
+                    <div class="row">
+                        <button class="success" onclick="createDeviceForBuilding()">Create & Assign Device</button>
+                    </div>
+
+                    <div id="newDeviceStatus" class="status"></div>
+                </div>
+
+                <!-- Reassign Existing Device -->
+                <div>
+                    <h3 style="color:#93c5fd; margin-top:0;">Reassign Device to Building</h3>
+
+                    <label>Select Device *</label>
+                    <select id="deviceReassignSelect" onchange="fillBuildingDeviceForm()"></select>
+
+                    <label>Target Building *</label>
+                    <select id="deviceReassignBuildingSelect" onchange="loadFloorsForDeviceReassign()"></select>
+
+                    <label>Target Floor (Optional)</label>
+                    <select id="deviceReassignFloorSelect" onchange="loadRoomsForDeviceReassign()"></select>
+
+                    <label>Target Room (Optional)</label>
+                    <select id="deviceReassignRoomSelect"></select>
+
+                    <div class="row">
+                        <button class="success" onclick="assignDeviceToBuilding()">Assign Building / Room</button>
+                        <button class="secondary" onclick="openSelectedDeviceCapabilitiesFromBuilding()">Device Capabilities</button>
+                        <button class="danger" onclick="deleteSelectedBuildingDevice()">Delete Device</button>
+                    </div>
+
+                    <div id="deviceBuildingStatus" class="status"></div>
+                </div>
+            </div>
+        </div>
+
         <div class="card">
             <div class="card-header-line">
                 <h2>Operational Links</h2>
@@ -934,6 +1004,21 @@ function fillAllDropdowns() {
     fillSelect("deviceFloorSelect", floors, "Select floor", f => {
         const building = getById(buildings, f.building_id);
         return `${f.name} / ${building ? building.name : "Building " + f.building_id}`;
+    });
+
+    fillSelect("newDeviceBuildingSelect", buildings, "Select target building", b => {
+        const site = getById(sites, b.site_id);
+        return `${b.name} / Site: ${site ? site.name : b.site_id}`;
+    });
+
+    fillSelect("deviceReassignBuildingSelect", buildings, "Select target building", b => {
+        const site = getById(sites, b.site_id);
+        return `${b.name} / Site: ${site ? site.name : b.site_id}`;
+    });
+
+    fillSelect("deviceReassignSelect", devices, "Select device to reassign", d => {
+        const b = d.building ? ` / Building: ${d.building}` : "";
+        return `${d.label || d.device_id} (${d.device_id})${b}`;
     });
 }
 
@@ -1531,6 +1616,183 @@ async function assignDeviceToRoom() {
     } catch (err) {
         showStatus("deviceAssignStatus", err.message, "bad");
     }
+}
+
+function loadFloorsForNewDevice() {
+    const buildingId = document.getElementById("newDeviceBuildingSelect").value;
+    const floorSelect = document.getElementById("newDeviceFloorSelect");
+    const roomSelect = document.getElementById("newDeviceRoomSelect");
+    roomSelect.innerHTML = `<option value="">Select room (optional)</option>`;
+
+    if (!buildingId) {
+        floorSelect.innerHTML = `<option value="">Select floor (optional)</option>`;
+        return;
+    }
+
+    const bldFloors = floors.filter(f => String(f.building_id) === String(buildingId));
+    fillSelect("newDeviceFloorSelect", bldFloors, "Select floor (optional)", f => f.name);
+}
+
+async function loadRoomsForNewDevice() {
+    const floorId = document.getElementById("newDeviceFloorSelect").value;
+    const roomSelect = document.getElementById("newDeviceRoomSelect");
+
+    if (!floorId) {
+        roomSelect.innerHTML = `<option value="">Select room (optional)</option>`;
+        return;
+    }
+
+    try {
+        const floorRooms = await fetchJson(`/floors/${floorId}/rooms`);
+        fillSelect("newDeviceRoomSelect", floorRooms, "Select room (optional)", r => r.room_name);
+    } catch (err) {
+        roomSelect.innerHTML = `<option value="">Select room (optional)</option>`;
+    }
+}
+
+function loadFloorsForDeviceReassign() {
+    const buildingId = document.getElementById("deviceReassignBuildingSelect").value;
+    const floorSelect = document.getElementById("deviceReassignFloorSelect");
+    const roomSelect = document.getElementById("deviceReassignRoomSelect");
+    roomSelect.innerHTML = `<option value="">Select room (optional)</option>`;
+
+    if (!buildingId) {
+        floorSelect.innerHTML = `<option value="">Select floor (optional)</option>`;
+        return;
+    }
+
+    const bldFloors = floors.filter(f => String(f.building_id) === String(buildingId));
+    fillSelect("deviceReassignFloorSelect", bldFloors, "Select floor (optional)", f => f.name);
+}
+
+async function loadRoomsForDeviceReassign() {
+    const floorId = document.getElementById("deviceReassignFloorSelect").value;
+    const roomSelect = document.getElementById("deviceReassignRoomSelect");
+
+    if (!floorId) {
+        roomSelect.innerHTML = `<option value="">Select room (optional)</option>`;
+        return;
+    }
+
+    try {
+        const floorRooms = await fetchJson(`/floors/${floorId}/rooms`);
+        fillSelect("deviceReassignRoomSelect", floorRooms, "Select room (optional)", r => r.room_name);
+    } catch (err) {
+        roomSelect.innerHTML = `<option value="">Select room (optional)</option>`;
+    }
+}
+
+function fillBuildingDeviceForm() {
+    const deviceId = document.getElementById("deviceReassignSelect").value;
+    if (!deviceId) return;
+
+    const device = getDeviceById(deviceId);
+    if (!device) return;
+
+    if (device.building_id) {
+        document.getElementById("deviceReassignBuildingSelect").value = device.building_id;
+        loadFloorsForDeviceReassign();
+
+        if (device.floor_id) {
+            setTimeout(async () => {
+                document.getElementById("deviceReassignFloorSelect").value = device.floor_id;
+                await loadRoomsForDeviceReassign();
+
+                if (device.room_id) {
+                    document.getElementById("deviceReassignRoomSelect").value = device.room_id;
+                }
+            }, 100);
+        }
+    }
+}
+
+async function createDeviceForBuilding() {
+    const device_id = document.getElementById("newDeviceId").value.trim();
+    const label = document.getElementById("newDeviceLabel").value.trim();
+    const node_type = document.getElementById("newDeviceNodeType").value;
+    const building_id = Number(document.getElementById("newDeviceBuildingSelect").value);
+    const floor_id = document.getElementById("newDeviceFloorSelect").value ? Number(document.getElementById("newDeviceFloorSelect").value) : null;
+    const room_id = document.getElementById("newDeviceRoomSelect").value ? Number(document.getElementById("newDeviceRoomSelect").value) : null;
+
+    if (!device_id || !building_id) {
+        showStatus("newDeviceStatus", "Device ID and Target Building are required.", "bad");
+        return;
+    }
+
+    try {
+        await fetchJson("/devices", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({device_id, label, node_type, building_id, floor_id, room_id})
+        });
+
+        document.getElementById("newDeviceId").value = "";
+        document.getElementById("newDeviceLabel").value = "";
+        showStatus("newDeviceStatus", `Device '${device_id}' created and assigned to building successfully!`, "good");
+        await refreshAll();
+
+    } catch (err) {
+        showStatus("newDeviceStatus", err.message, "bad");
+    }
+}
+
+async function assignDeviceToBuilding() {
+    const deviceId = document.getElementById("deviceReassignSelect").value;
+    const building_id = Number(document.getElementById("deviceReassignBuildingSelect").value);
+    const floor_id = document.getElementById("deviceReassignFloorSelect").value ? Number(document.getElementById("deviceReassignFloorSelect").value) : null;
+    const room_id = document.getElementById("deviceReassignRoomSelect").value ? Number(document.getElementById("deviceReassignRoomSelect").value) : null;
+
+    if (!deviceId || !building_id) {
+        showStatus("deviceBuildingStatus", "Select a device and target building.", "bad");
+        return;
+    }
+
+    try {
+        await fetchJson(`/devices/${encodeURIComponent(deviceId)}/assign-building`, {
+            method: "PUT",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({building_id, floor_id, room_id})
+        });
+
+        showStatus("deviceBuildingStatus", "Device reassigned to building successfully.", "good");
+        await refreshAll();
+
+    } catch (err) {
+        showStatus("deviceBuildingStatus", err.message, "bad");
+    }
+}
+
+async function deleteSelectedBuildingDevice() {
+    const deviceId = document.getElementById("deviceReassignSelect").value;
+
+    if (!deviceId) {
+        showStatus("deviceBuildingStatus", "Select a device first.", "bad");
+        return;
+    }
+
+    if (!confirm(`Delete device '${deviceId}'?`)) {
+        return;
+    }
+
+    try {
+        await fetchJson(`/devices/${encodeURIComponent(deviceId)}`, {method: "DELETE"});
+        showStatus("deviceBuildingStatus", `Device '${deviceId}' deleted.`, "good");
+        await refreshAll();
+
+    } catch (err) {
+        showStatus("deviceBuildingStatus", err.message, "bad");
+    }
+}
+
+function openSelectedDeviceCapabilitiesFromBuilding() {
+    const deviceId = document.getElementById("deviceReassignSelect").value;
+
+    if (!deviceId) {
+        showStatus("deviceBuildingStatus", "Select a device first, then open Device Capabilities.", "bad");
+        return;
+    }
+
+    window.location.href = `/device-capabilities-manager?device_id=${encodeURIComponent(deviceId)}`;
 }
 
 function openSelectedFloorEditor() {

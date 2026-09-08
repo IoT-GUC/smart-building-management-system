@@ -387,6 +387,215 @@ def devices_status():
 
     finally:
         conn.close()
+@router.post("/devices")
+def create_device(data: dict):
+    device_id = str(data.get("device_id") or "").strip()
+    building_id = data.get("building_id")
+    floor_id = data.get("floor_id")
+    room_id = data.get("room_id")
+    label = str(data.get("label") or "").strip() or device_id
+    node_type = str(data.get("node_type") or "environment").strip()
+    chip_mac = str(data.get("chip_mac") or "").strip() or None
+    dev_eui = str(data.get("dev_eui") or "").strip() or None
+    app_key = str(data.get("app_key") or "").strip() or None
+    profile_id = data.get("profile_id")
+
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id is required")
+
+    if not building_id and not room_id and not floor_id:
+        raise HTTPException(status_code=400, detail="building_id, floor_id, or room_id is required")
+
+    conn = db()
+    try:
+        existing = conn.execute("SELECT device_id FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Device '{device_id}' already exists")
+
+        site_id = None
+        client_id = None
+
+        if room_id:
+            room_row = conn.execute("""
+                SELECT r.id as room_id, f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                FROM rooms r
+                JOIN floors f ON r.floor_id = f.id
+                JOIN buildings b ON f.building_id = b.id
+                LEFT JOIN sites s ON b.site_id = s.id
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE r.id = ?
+            """, (room_id,)).fetchone()
+            if room_row:
+                room_id = room_row["room_id"]
+                floor_id = room_row["floor_id"]
+                building_id = room_row["building_id"]
+                site_id = room_row["site_id"]
+                client_id = room_row["client_id"]
+        elif floor_id:
+            floor_row = conn.execute("""
+                SELECT f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                FROM floors f
+                JOIN buildings b ON f.building_id = b.id
+                LEFT JOIN sites s ON b.site_id = s.id
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE f.id = ?
+            """, (floor_id,)).fetchone()
+            if floor_row:
+                floor_id = floor_row["floor_id"]
+                building_id = floor_row["building_id"]
+                site_id = floor_row["site_id"]
+                client_id = floor_row["client_id"]
+        elif building_id:
+            bldg_row = conn.execute("""
+                SELECT b.id as building_id, s.id as site_id, c.id as client_id
+                FROM buildings b
+                LEFT JOIN sites s ON b.site_id = s.id
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE b.id = ?
+            """, (building_id,)).fetchone()
+            if bldg_row:
+                building_id = bldg_row["building_id"]
+                site_id = bldg_row["site_id"]
+                client_id = bldg_row["client_id"]
+            else:
+                raise HTTPException(status_code=404, detail=f"Building with ID {building_id} not found")
+
+        conn.execute("""
+            INSERT INTO devices (
+                device_id, chip_mac, dev_eui, app_key, node_type, label,
+                building_id, floor_id, room_id, site_id, client_id, profile_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            device_id, chip_mac, dev_eui, app_key, node_type, label,
+            building_id, floor_id, room_id, site_id, client_id, profile_id
+        ))
+
+        conn.commit()
+
+        log_audit_event(
+            conn,
+            action="create_device",
+            target_type="device",
+            target_id=device_id,
+            message=f"Device {device_id} created and assigned to building {building_id}",
+            client_id=client_id,
+            site_id=site_id,
+            building_id=building_id,
+            floor_id=floor_id,
+            room_id=room_id,
+        )
+
+        created = conn.execute("SELECT * FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        return {"status": "created", "device": dict(created)}
+    finally:
+        conn.close()
+
+
+@router.put("/devices/{device_id}/assign-building")
+def assign_device_to_building(device_id: str, data: dict):
+    building_id = data.get("building_id")
+    floor_id = data.get("floor_id")
+    room_id = data.get("room_id")
+
+    if not building_id and not floor_id and not room_id:
+        raise HTTPException(status_code=400, detail="building_id, floor_id, or room_id is required")
+
+    conn = db()
+    try:
+        device = conn.execute("SELECT * FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        if not device:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+        site_id = None
+        client_id = None
+
+        if room_id:
+            room_row = conn.execute("""
+                SELECT r.id as room_id, f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                FROM rooms r
+                JOIN floors f ON r.floor_id = f.id
+                JOIN buildings b ON f.building_id = b.id
+                LEFT JOIN sites s ON b.site_id = s.id
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE r.id = ?
+            """, (room_id,)).fetchone()
+            if room_row:
+                room_id = room_row["room_id"]
+                floor_id = room_row["floor_id"]
+                building_id = room_row["building_id"]
+                site_id = room_row["site_id"]
+                client_id = room_row["client_id"]
+        elif floor_id:
+            floor_row = conn.execute("""
+                SELECT f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                FROM floors f
+                JOIN buildings b ON f.building_id = b.id
+                LEFT JOIN sites s ON b.site_id = s.id
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE f.id = ?
+            """, (floor_id,)).fetchone()
+            if floor_row:
+                floor_id = floor_row["floor_id"]
+                building_id = floor_row["building_id"]
+                site_id = floor_row["site_id"]
+                client_id = floor_row["client_id"]
+        elif building_id:
+            bldg_row = conn.execute("""
+                SELECT b.id as building_id, s.id as site_id, c.id as client_id
+                FROM buildings b
+                LEFT JOIN sites s ON b.site_id = s.id
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE b.id = ?
+            """, (building_id,)).fetchone()
+            if bldg_row:
+                building_id = bldg_row["building_id"]
+                site_id = bldg_row["site_id"]
+                client_id = bldg_row["client_id"]
+            else:
+                raise HTTPException(status_code=404, detail=f"Building with ID {building_id} not found")
+
+        conn.execute("""
+            UPDATE devices
+            SET building_id = ?, floor_id = ?, room_id = ?, site_id = ?, client_id = ?
+            WHERE device_id = ?
+        """, (building_id, floor_id, room_id, site_id, client_id, device_id))
+
+        conn.commit()
+
+        updated = conn.execute("SELECT * FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+        return {"status": "assigned", "device": dict(updated)}
+    finally:
+        conn.close()
+
+
+@router.get("/buildings/{building_id}/devices")
+def get_building_devices(building_id: int):
+    conn = db()
+    try:
+        bldg = conn.execute("SELECT * FROM buildings WHERE id = ?", (building_id,)).fetchone()
+        if not bldg:
+            raise HTTPException(status_code=404, detail=f"Building with ID {building_id} not found")
+
+        rows = conn.execute("""
+            SELECT 
+                d.*,
+                r.room_name as room,
+                f.name as floor,
+                b.name as building
+            FROM devices d
+            LEFT JOIN rooms r ON d.room_id = r.id
+            LEFT JOIN floors f ON d.floor_id = f.id OR r.floor_id = f.id
+            LEFT JOIN buildings b ON d.building_id = b.id OR f.building_id = b.id
+            WHERE d.building_id = ? OR f.building_id = ? OR r.floor_id IN (SELECT id FROM floors WHERE building_id = ?)
+            GROUP BY d.device_id
+            ORDER BY COALESCE(d.label, d.device_id)
+        """, (building_id, building_id, building_id)).fetchall()
+
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
 @router.put("/devices/{device_id}/assign-room")
 def assign_device_to_room(device_id: str, data: dict):
     room_id = data.get("room_id")
