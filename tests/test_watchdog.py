@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
-import pytest
 
 from app.main import check_offline_devices
 
 
-@pytest.mark.anyio
-async def test_watchdog_detects_offline_device(db_conn: sqlite3.Connection):
+def test_watchdog_detects_offline_device(db_conn: sqlite3.Connection):
     # Seed device and latest telemetry with timestamp > 24 hours ago
     db_conn.execute("INSERT OR REPLACE INTO clients (id, name) VALUES (1, 'Test Client')")
     db_conn.execute("INSERT OR REPLACE INTO sites (id, client_id, name) VALUES (1, 1, 'Test Site')")
@@ -29,7 +27,7 @@ async def test_watchdog_detects_offline_device(db_conn: sqlite3.Connection):
     db_conn.commit()
 
     # Run check_offline_devices
-    await check_offline_devices(db_conn)
+    check_offline_devices(db_conn)
 
     # Verify device status updated to OFFLINE and alarm_history record created
     telem = db_conn.execute("SELECT alarm_active, alarm_message FROM device_latest_telemetry WHERE device_id = 'dev_stale_1'").fetchone()

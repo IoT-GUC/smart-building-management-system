@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from app.main import app
 from fastapi.testclient import TestClient
+
+from app.main import app
 
 
 def test_no_duplicate_route_paths_and_methods():

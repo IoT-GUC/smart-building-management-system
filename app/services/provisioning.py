@@ -1,10 +1,9 @@
-import logging
 import json
+import logging
 import sqlite3
-from typing import Any, Dict, List, Optional
+
 from fastapi import HTTPException
 
-from app.config import settings
 from app.db.connection import get_db_connection
 from app.schemas.core import Device
 
@@ -194,12 +193,23 @@ def build_profile_provision_response(status: str, device_row: sqlite3.Row, profi
 
 def provision(device: Device) -> dict:
     from app.main import (
-        validate_config, normalize_mac, normalize_eui, JOIN_EUI,
-        get_existing_device, make_device_id, generate_unique_dev_eui,
-        generate_app_key, get_auto_room_position, register_device_in_ttn,
-        save_device, save_device_profile_assignment, save_device_capabilities,
-        record_device_configuration_history, sync_tb_attributes_from_profile,
-        update_existing_device_metadata, set_device_formatter_from_profile
+        JOIN_EUI,
+        generate_app_key,
+        generate_unique_dev_eui,
+        get_auto_room_position,
+        get_existing_device,
+        make_device_id,
+        normalize_eui,
+        normalize_mac,
+        record_device_configuration_history,
+        register_device_in_ttn,
+        save_device,
+        save_device_capabilities,
+        save_device_profile_assignment,
+        set_device_formatter_from_profile,
+        sync_tb_attributes_from_profile,
+        update_existing_device_metadata,
+        validate_config,
     )
 
     try:

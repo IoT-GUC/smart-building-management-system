@@ -1,16 +1,30 @@
 import logging
+
 logger = logging.getLogger(__name__)
 
-import os
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form, Query, BackgroundTasks
-from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, FileResponse, RedirectResponse
-import json
 import sqlite3
-import csv
-import io
-import re
+
+from fastapi import APIRouter, HTTPException, Request
+
 from app.db.connection import get_db_connection as db
-from app.main import get_sensor_profile_detail, log_audit_event
+from app.main import (
+    clone_sensor_profile_record,
+    create_sensor_profile_record,
+    delete_sensor_profile_record,
+    generate_unique_sensor_profile_code,
+    get_sensor_catalog_detail,
+    get_sensor_profile_detail,
+    list_sensor_profile_summaries,
+    log_audit_event,
+    normalize_sensor_catalog_definition,
+    profile_utc_now_iso,
+    profile_value_to_boolean,
+    sensor_profile_actor_from_request,
+    set_sensor_catalog_enabled_api,
+    set_sensor_profile_enabled,
+    update_sensor_profile_record,
+    validate_sensor_profile_definition,
+)
 
 router = APIRouter()
 
@@ -446,7 +460,7 @@ def create_sensor_catalog_api(
 
     except Exception as error:
         conn.rollback()
-        logger.error("Create sensor catalog error:", error)
+        logger.error("Create sensor catalog error: %s", error)
         raise HTTPException(
             status_code=500,
             detail="Could not create the sensor catalog record",
@@ -569,7 +583,7 @@ def update_sensor_catalog_api(
 
     except Exception as error:
         conn.rollback()
-        logger.error("Update sensor catalog error:", error)
+        logger.error("Update sensor catalog error: %s", error)
         raise HTTPException(
             status_code=500,
             detail="Could not update the sensor catalog record",
@@ -671,7 +685,7 @@ def delete_sensor_catalog_api(
 
     except Exception as error:
         conn.rollback()
-        logger.error("Delete sensor catalog error:", error)
+        logger.error("Delete sensor catalog error: %s", error)
         raise HTTPException(
             status_code=500,
             detail="Could not delete the sensor catalog record",
@@ -752,7 +766,7 @@ def create_sensor_profile_api(
         conn.rollback()
 
         logger.info(
-            "Create sensor profile API error:",
+            "Create sensor profile API error: %s",
             error,
         )
 
@@ -846,7 +860,7 @@ def update_sensor_profile_api(
         conn.rollback()
 
         logger.info(
-            "Update sensor profile API error:",
+            "Update sensor profile API error: %s",
             error,
         )
 
@@ -1008,7 +1022,7 @@ def clone_sensor_profile_api(
         conn.rollback()
 
         logger.info(
-            "Clone sensor profile API error:",
+            "Clone sensor profile API error: %s",
             error,
         )
 
@@ -1068,7 +1082,7 @@ def enable_sensor_profile_api(
         conn.rollback()
 
         logger.info(
-            "Enable sensor profile API error:",
+            "Enable sensor profile API error: %s",
             error,
         )
 
@@ -1131,7 +1145,7 @@ def disable_sensor_profile_api(
         conn.rollback()
 
         logger.info(
-            "Disable sensor profile API error:",
+            "Disable sensor profile API error: %s",
             error,
         )
 
@@ -1220,7 +1234,7 @@ def delete_sensor_profile_api(
         conn.rollback()
 
         logger.info(
-            "Delete sensor profile API error:",
+            "Delete sensor profile API error: %s",
             error,
         )
 

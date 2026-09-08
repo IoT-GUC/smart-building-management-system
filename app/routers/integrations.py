@@ -1,15 +1,12 @@
 import logging
+
 logger = logging.getLogger(__name__)
 
-import os
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form, Query, BackgroundTasks
-from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, FileResponse, RedirectResponse
-import json
-import sqlite3
-import csv
-import io
-import re
+
+from fastapi import APIRouter
+
 from app.db.connection import get_db_connection as db
+from app.main import ALLOWED_NODE_TYPES, profile_json_load
 from app.schemas.core import Device
 
 router = APIRouter()
@@ -36,17 +33,19 @@ def provision_options():
             """
             SELECT
                 rooms.id,
-                rooms.building,
-                rooms.floor,
+                buildings.name AS building,
+                floors.name AS floor,
                 rooms.room_name,
                 rooms.x,
                 rooms.y,
                 rooms.floor_id
             FROM rooms
+            LEFT JOIN floors ON floors.id = rooms.floor_id
+            LEFT JOIN buildings ON buildings.id = floors.building_id
             WHERE rooms.floor_id IS NOT NULL
             ORDER BY
-                rooms.building,
-                rooms.floor,
+                buildings.name,
+                floors.floor_number,
                 rooms.room_name
             """
         ).fetchall()
@@ -452,4 +451,4 @@ def provision(device: Device):
     profile and a stable room_id.
     """
     from app.services.provisioning import provision as provision_service
-    return provision_service(device)
+    return provision_service(device)

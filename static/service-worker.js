@@ -1,19 +1,32 @@
 const CACHE_NAME = 'smartbms-cache-v2';
+// These are served from the /static mount, not /uploads (which holds
+// uploaded floorplan images). Pointing at /uploads made every fetch 404, and
+// because cache.addAll() rejects as a whole on any failure, the service
+// worker never finished installing.
 const STATIC_ASSETS = [
-  '/uploads/bright_theme.css',
-  '/uploads/graphs.js',
-  '/uploads/help_system.js',
-  '/uploads/search_system.js',
-  '/uploads/realtime_toasts.js',
-  '/uploads/analytics_widget.js',
-  '/uploads/bulk_import.js',
-  'https://cdn.jsdelivr.net/npm/chart.js'
+  '/static/bright_theme.css',
+  '/static/graphs.js',
+  '/static/help_system.js',
+  '/static/search_system.js',
+  '/static/realtime_toasts.js',
+  '/static/analytics_widget.js',
+  '/static/bulk_import.js',
+  '/static/onboarding_tour.js',
+  '/static/generate_firmware.js'
 ];
 
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(STATIC_ASSETS))
+      // Cache each asset independently so one bad entry cannot abort the
+      // whole install the way addAll() does.
+      .then(cache => Promise.all(
+        STATIC_ASSETS.map(url =>
+          cache.add(url).catch(err =>
+            console.warn('[sw] skipped precache for', url, err)
+          )
+        )
+      ))
       .then(() => self.skipWaiting())
   );
 });

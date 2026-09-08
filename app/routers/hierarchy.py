@@ -1,14 +1,29 @@
 import logging
+
 logger = logging.getLogger(__name__)
 
-import os
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form, Query, BackgroundTasks
-from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, FileResponse, RedirectResponse
 import json
-import sqlite3
-import csv
-import io
 import re
+
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+
+from app.db.connection import get_db_connection as db
+from app.main import (
+    UPLOAD_DIR,
+    build_profile_display_telemetry,
+    build_profile_live_field_metadata,
+    build_profile_live_metadata,
+    delete_by_ids,
+    get_device_capabilities_list,
+    get_floorplan_ids_for_floors_and_rooms,
+    get_ids,
+    get_local_latest_telemetry,
+    get_room_ids_for_floors,
+    load_device_profile_for_live_telemetry,
+    merge_profile_live_telemetry_sources,
+    read_tb_latest_telemetry,
+    safe_unassign_gateways,
+)
 from app.services.uploads import save_image_securely
 
 router = APIRouter()
@@ -19,43 +34,52 @@ async def upload_floor_image(
     image: UploadFile = File(...)
 ):
     conn = db()
+    try:
 
-    floor = conn.execute("""
+        floor = conn.execute("""
         SELECT *
         FROM floors
         WHERE id = ?
     """, (floor_id,)).fetchone()
 
-    if not floor:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Floor not found")
+        if not floor:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Floor not found")
 
-    filename, width, height = await save_image_securely(image, UPLOAD_DIR, prefix=f"floor_{floor_id}")
-    image_path = f"/uploads/{filename}"
+        filename, width, height = await save_image_securely(image, UPLOAD_DIR, prefix=f"floor_{floor_id}")
+        image_path = f"/uploads/{filename}"
 
-    conn.execute("""
+        conn.execute("""
         UPDATE floors
         SET image_path = ?,
             image_width = ?,
             image_height = ?
         WHERE id = ?
     """, (
-        image_path,
-        width,
-        height,
-        floor_id,
-    ))
+            image_path,
+            width,
+            height,
+            floor_id,
+        ))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
-    return {
-        "status": "uploaded",
-        "floor_id": floor_id,
-        "image_path": image_path,
-        "image_width": width,
-        "image_height": height,
-    }
+        return {
+            "status": "uploaded",
+            "floor_id": floor_id,
+            "image_path": image_path,
+            "image_width": width,
+            "image_height": height,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.post("/floorplans/upload")
 async def upload_floorplan(
     building: str = Form(...),
@@ -70,8 +94,9 @@ async def upload_floorplan(
     image_path = f"/uploads/{filename}"
 
     conn = db()
-    cur = conn.execute(
-        """
+    try:
+        cur = conn.execute(
+            """
         INSERT INTO floorplans (
             building,
             floor,
@@ -80,53 +105,64 @@ async def upload_floorplan(
             image_height
         ) VALUES (?, ?, ?, ?, ?)
         """,
-        (
-            building,
-            floor,
-            image_path,
-            width,
-            height,
-        ),
-    )
-    conn.commit()
-    floorplan_id = cur.lastrowid
-    conn.close()
+            (
+                building,
+                floor,
+                image_path,
+                width,
+                height,
+            ),
+        )
+        conn.commit()
+        floorplan_id = cur.lastrowid
+        conn.close()
 
-    return {
-        "status": "uploaded",
-        "floorplan_id": floorplan_id,
-        "building": building,
-        "floor": floor,
-        "image_path": image_path,
-        "image_width": width,
-        "image_height": height,
-    }
+        return {
+            "status": "uploaded",
+            "floorplan_id": floorplan_id,
+            "building": building,
+            "floor": floor,
+            "image_path": image_path,
+            "image_width": width,
+            "image_height": height,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/floorplans")
 def get_floorplans():
     conn = db()
+    try:
 
-    rows = conn.execute("""
+        rows = conn.execute("""
         SELECT id, building, floor, image_path, image_width, image_height, created_at
         FROM floorplans
         ORDER BY id DESC
     """).fetchall()
 
-    conn.close()
+        conn.close()
 
-    return [
-        {
-            "id": row["id"],
-            "building": row["building"],
-            "floor": row["floor"],
-            "image_path": row["image_path"],
-            "image_width": row["image_width"],
-            "image_height": row["image_height"],
-            "created_at": row["created_at"],
-        }
-        for row in rows
-    ]
+        return [
+            {
+                "id": row["id"],
+                "building": row["building"],
+                "floor": row["floor"],
+                "image_path": row["image_path"],
+                "image_width": row["image_width"],
+                "image_height": row["image_height"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
 @router.post("/rooms")
-async def create_room(data: dict):
+def create_room(data: dict):
     required_fields = [
         "floor_id",
         "room_name",
@@ -162,9 +198,10 @@ async def create_room(data: dict):
         )
 
     conn = db()
+    try:
 
-    cur = conn.execute(
-        """
+        cur = conn.execute(
+            """
         INSERT INTO rooms (
             floor_id,
             room_name,
@@ -173,62 +210,73 @@ async def create_room(data: dict):
             y
         ) VALUES (?, ?, ?, ?, ?)
         """,
-        (
-            data["floor_id"],
-            data["room_name"],
-            json.dumps(polygon_points),
-            center_x,
-            center_y,
-        ),
-    )
+            (
+                data["floor_id"],
+                data["room_name"],
+                json.dumps(polygon_points),
+                center_x,
+                center_y,
+            ),
+        )
 
-    conn.commit()
+        conn.commit()
 
-    room_id = cur.lastrowid
+        room_id = cur.lastrowid
 
-    conn.close()
+        conn.close()
 
-    return {
-        "status": "created",
-        "room_id": room_id,
-        "floor_id": data["floor_id"],
-        "room_name": data["room_name"],
-        "polygon_points": polygon_points,
-        "x": center_x,
-        "y": center_y,
-    }
+        return {
+            "status": "created",
+            "room_id": room_id,
+            "floor_id": data["floor_id"],
+            "room_name": data["room_name"],
+            "polygon_points": polygon_points,
+            "x": center_x,
+            "y": center_y,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/rooms")
 def get_rooms(floor_id: int | None = None):
     conn = db()
+    try:
 
-    if floor_id is not None:
-        rows = conn.execute("""
+        if floor_id is not None:
+            rows = conn.execute("""
             SELECT id, floor_id, room_name, polygon_points, x, y, created_at
             FROM rooms
             WHERE floor_id = ?
             ORDER BY id DESC
         """, (floor_id,)).fetchall()
-    else:
-        rows = conn.execute("""
+        else:
+            rows = conn.execute("""
             SELECT id, floor_id, room_name, polygon_points, x, y, created_at
             FROM rooms
             ORDER BY id DESC
         """).fetchall()
 
-    conn.close()
+        conn.close()
 
-    return [
-        {
-            "id": row["id"],
-            "floor_id": row["floor_id"],
-            "room_name": row["room_name"],
-            "polygon_points": json.loads(row["polygon_points"]),
-            "x": row["x"],
-            "y": row["y"],
-            "created_at": row["created_at"],
-        }
-        for row in rows
-    ]
+        return [
+            {
+                "id": row["id"],
+                "floor_id": row["floor_id"],
+                "room_name": row["room_name"],
+                "polygon_points": json.loads(row["polygon_points"]),
+                "x": row["x"],
+                "y": row["y"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
 @router.post("/sites")
 def create_site(data: dict):
     client_id = data.get("client_id")
@@ -241,52 +289,64 @@ def create_site(data: dict):
         raise HTTPException(status_code=400, detail="Site name required")
 
     conn = db()
+    try:
 
-    cur = conn.execute("""
+        cur = conn.execute("""
         INSERT INTO sites(
             client_id,
             name
         )
         VALUES (?, ?)
     """, (
-        client_id,
-        name,
-    ))
+            client_id,
+            name,
+        ))
 
-    conn.commit()
+        conn.commit()
 
-    site_id = cur.lastrowid
+        site_id = cur.lastrowid
 
-    conn.close()
+        conn.close()
 
-    return {
-        "status": "created",
-        "site_id": site_id,
-        "client_id": client_id,
-        "name": name,
-    }
+        return {
+            "status": "created",
+            "site_id": site_id,
+            "client_id": client_id,
+            "name": name,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/sites")
 def get_sites(client_id: int | None = None):
     conn = db()
+    try:
 
-    if client_id is not None:
-        rows = conn.execute("""
+        if client_id is not None:
+            rows = conn.execute("""
             SELECT *
             FROM sites
             WHERE client_id = ?
             ORDER BY id DESC
         """, (client_id,)).fetchall()
 
-    else:
-        rows = conn.execute("""
+        else:
+            rows = conn.execute("""
             SELECT *
             FROM sites
             ORDER BY id DESC
         """).fetchall()
 
-    conn.close()
+        conn.close()
 
-    return [dict(r) for r in rows]
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 @router.post("/buildings")
 def create_building(data: dict):
     site_id = data.get("site_id")
@@ -299,8 +359,9 @@ def create_building(data: dict):
         raise HTTPException(status_code=400, detail="Building name required")
 
     conn = db()
+    try:
 
-    cur = conn.execute("""
+        cur = conn.execute("""
         INSERT INTO buildings(
             site_id,
             name,
@@ -310,59 +371,70 @@ def create_building(data: dict):
         )
         VALUES (?, ?, ?, ?, ?)
     """, (
-        site_id,
-        name,
-        json.dumps(data.get("polygon_points", [])),
-        data.get("x"),
-        data.get("y"),
-    ))
+            site_id,
+            name,
+            json.dumps(data.get("polygon_points", [])),
+            data.get("x"),
+            data.get("y"),
+        ))
 
-    conn.commit()
+        conn.commit()
 
-    building_id = cur.lastrowid
+        building_id = cur.lastrowid
 
-    conn.close()
+        conn.close()
 
-    return {
-        "status": "created",
-        "building_id": building_id,
-        "site_id": site_id,
-        "name": name,
-    }
+        return {
+            "status": "created",
+            "building_id": building_id,
+            "site_id": site_id,
+            "name": name,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/buildings")
 def get_buildings(site_id: int | None = None):
     conn = db()
+    try:
 
-    if site_id is not None:
-        rows = conn.execute("""
+        if site_id is not None:
+            rows = conn.execute("""
             SELECT *
             FROM buildings
             WHERE site_id = ?
             ORDER BY id DESC
         """, (site_id,)).fetchall()
 
-    else:
-        rows = conn.execute("""
+        else:
+            rows = conn.execute("""
             SELECT *
             FROM buildings
             ORDER BY id DESC
         """).fetchall()
 
-    conn.close()
+        conn.close()
 
-    result = []
+        result = []
 
-    for r in rows:
-        item = dict(r)
+        for r in rows:
+            item = dict(r)
 
-        if item.get("polygon_points"):
-            item["polygon_points"] = json.loads(item["polygon_points"])
-        else:
-            item["polygon_points"] = []
+            if item.get("polygon_points"):
+                item["polygon_points"] = json.loads(item["polygon_points"])
+            else:
+                item["polygon_points"] = []
 
-        result.append(item)
+            result.append(item)
 
-    return result
+        return result
+    finally:
+        conn.close()
 @router.post("/floors")
 def create_floor(data: dict):
     building_id = data.get("building_id")
@@ -376,8 +448,9 @@ def create_floor(data: dict):
         raise HTTPException(status_code=400, detail="Floor name required")
 
     conn = db()
+    try:
 
-    cur = conn.execute("""
+        cur = conn.execute("""
         INSERT INTO floors(
             building_id,
             name,
@@ -388,88 +461,100 @@ def create_floor(data: dict):
         )
         VALUES (?, ?, ?, ?, ?, ?)
     """, (
-        building_id,
-        name,
-        data.get("floor_number"),
-        data.get("image_path"),
-        data.get("image_width"),
-        data.get("image_height"),
-    ))
+            building_id,
+            name,
+            data.get("floor_number"),
+            data.get("image_path"),
+            data.get("image_width"),
+            data.get("image_height"),
+        ))
 
-    conn.commit()
+        conn.commit()
 
-    floor_id = cur.lastrowid
+        floor_id = cur.lastrowid
 
-    conn.close()
+        conn.close()
 
-    return {
-        "status": "created",
-        "floor_id": floor_id,
-        "building_id": building_id,
-        "name": name,
-    }
+        return {
+            "status": "created",
+            "floor_id": floor_id,
+            "building_id": building_id,
+            "name": name,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/floors")
 def get_floors(building_id: int | None = None):
     conn = db()
+    try:
 
-    if building_id is not None:
-        rows = conn.execute("""
+        if building_id is not None:
+            rows = conn.execute("""
             SELECT *
             FROM floors
             WHERE building_id = ?
             ORDER BY id DESC
         """, (building_id,)).fetchall()
 
-    else:
-        rows = conn.execute("""
+        else:
+            rows = conn.execute("""
             SELECT *
             FROM floors
             ORDER BY id DESC
         """).fetchall()
 
-    conn.close()
+        conn.close()
 
-    return [dict(r) for r in rows]
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 @router.delete("/sites/{site_id}")
 def delete_site(site_id: int):
     conn = db()
+    try:
 
-    site = conn.execute("""
+        site = conn.execute("""
         SELECT *
         FROM sites
         WHERE id = ?
     """, (site_id,)).fetchone()
 
-    if not site:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Site not found")
+        if not site:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Site not found")
 
-    building_ids = get_ids(conn, """
+        building_ids = get_ids(conn, """
         SELECT id
         FROM buildings
         WHERE site_id = ?
     """, (site_id,))
 
-    floor_ids = []
+        floor_ids = []
 
-    if building_ids:
-        placeholders = ",".join("?" for _ in building_ids)
-        floor_ids = get_ids(conn, f"""
+        if building_ids:
+            placeholders = ",".join("?" for _ in building_ids)
+            floor_ids = get_ids(conn, f"""
             SELECT id
             FROM floors
             WHERE building_id IN ({placeholders})
         """, building_ids)
 
-    room_ids = get_room_ids_for_floors(conn, floor_ids)
-    floorplan_ids = get_floorplan_ids_for_floors_and_rooms(conn, floor_ids, room_ids)
+        room_ids = get_room_ids_for_floors(conn, floor_ids)
+        floorplan_ids = get_floorplan_ids_for_floors_and_rooms(conn, floor_ids, room_ids)
 
-    devices_count = conn.execute("""
+        devices_count = conn.execute("""
         SELECT COUNT(*)
         FROM devices
         WHERE site_id = ?
     """, (site_id,)).fetchone()[0]
 
-    conn.execute("""
+        conn.execute("""
         UPDATE devices
         SET site_id = NULL,
             building_id = NULL,
@@ -483,97 +568,106 @@ def delete_site(site_id: int):
         WHERE site_id = ?
     """, (site_id,))
 
-    gateways_unassigned = safe_unassign_gateways(
-        conn,
-        site_ids=[site_id],
-        building_ids=building_ids,
-        floor_ids=floor_ids,
-        clear_site=True,
-        clear_building=True,
-        clear_floor=True
-    )
+        gateways_unassigned = safe_unassign_gateways(
+            conn,
+            site_ids=[site_id],
+            building_ids=building_ids,
+            floor_ids=floor_ids,
+            clear_site=True,
+            clear_building=True,
+            clear_floor=True
+        )
 
-    deleted_user_access = conn.execute("""
+        deleted_user_access = conn.execute("""
         DELETE FROM user_access
         WHERE site_id = ?
     """, (site_id,)).rowcount
 
-    if building_ids:
-        placeholders = ",".join("?" for _ in building_ids)
-        deleted_user_access += conn.execute(f"""
+        if building_ids:
+            placeholders = ",".join("?" for _ in building_ids)
+            deleted_user_access += conn.execute(f"""
             DELETE FROM user_access
             WHERE building_id IN ({placeholders})
         """, building_ids).rowcount
 
-    if floor_ids:
-        placeholders = ",".join("?" for _ in floor_ids)
-        deleted_user_access += conn.execute(f"""
+        if floor_ids:
+            placeholders = ",".join("?" for _ in floor_ids)
+            deleted_user_access += conn.execute(f"""
             DELETE FROM user_access
             WHERE floor_id IN ({placeholders})
         """, floor_ids).rowcount
 
-    deleted_site_maps = conn.execute("""
+        deleted_site_maps = conn.execute("""
         DELETE FROM site_maps
         WHERE site_id = ?
     """, (site_id,)).rowcount
 
-    deleted_rooms = delete_by_ids(conn, "rooms", room_ids)
-    deleted_floorplans = delete_by_ids(conn, "floorplans", floorplan_ids)
-    deleted_floors = delete_by_ids(conn, "floors", floor_ids)
-    deleted_buildings = delete_by_ids(conn, "buildings", building_ids)
+        deleted_rooms = delete_by_ids(conn, "rooms", room_ids)
+        deleted_floorplans = delete_by_ids(conn, "floorplans", floorplan_ids)
+        deleted_floors = delete_by_ids(conn, "floors", floor_ids)
+        deleted_buildings = delete_by_ids(conn, "buildings", building_ids)
 
-    conn.execute("""
+        conn.execute("""
         DELETE FROM sites
         WHERE id = ?
     """, (site_id,))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
-    return {
-        "status": "deleted",
-        "site_id": site_id,
-        "deleted": {
-            "buildings": deleted_buildings,
-            "floors": deleted_floors,
-            "rooms": deleted_rooms,
-            "floorplans": deleted_floorplans,
-            "site_maps": deleted_site_maps,
-            "user_access_records": deleted_user_access
-        },
-        "devices_preserved_and_unassigned": devices_count,
-        "gateways_preserved_and_unassigned": gateways_unassigned
-    }
+        return {
+            "status": "deleted",
+            "site_id": site_id,
+            "deleted": {
+                "buildings": deleted_buildings,
+                "floors": deleted_floors,
+                "rooms": deleted_rooms,
+                "floorplans": deleted_floorplans,
+                "site_maps": deleted_site_maps,
+                "user_access_records": deleted_user_access
+            },
+            "devices_preserved_and_unassigned": devices_count,
+            "gateways_preserved_and_unassigned": gateways_unassigned
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.delete("/buildings/{building_id}")
 def delete_building(building_id: int):
     conn = db()
+    try:
 
-    building = conn.execute("""
+        building = conn.execute("""
         SELECT *
         FROM buildings
         WHERE id = ?
     """, (building_id,)).fetchone()
 
-    if not building:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Building not found")
+        if not building:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Building not found")
 
-    floor_ids = get_ids(conn, """
+        floor_ids = get_ids(conn, """
         SELECT id
         FROM floors
         WHERE building_id = ?
     """, (building_id,))
 
-    room_ids = get_room_ids_for_floors(conn, floor_ids)
-    floorplan_ids = get_floorplan_ids_for_floors_and_rooms(conn, floor_ids, room_ids)
+        room_ids = get_room_ids_for_floors(conn, floor_ids)
+        floorplan_ids = get_floorplan_ids_for_floors_and_rooms(conn, floor_ids, room_ids)
 
-    devices_count = conn.execute("""
+        devices_count = conn.execute("""
         SELECT COUNT(*)
         FROM devices
         WHERE building_id = ?
     """, (building_id,)).fetchone()[0]
 
-    conn.execute("""
+        conn.execute("""
         UPDATE devices
         SET building_id = NULL,
             floor_id = NULL,
@@ -586,75 +680,83 @@ def delete_building(building_id: int):
         WHERE building_id = ?
     """, (building_id,))
 
-    gateways_unassigned = safe_unassign_gateways(
-        conn,
-        building_ids=[building_id],
-        floor_ids=floor_ids,
-        clear_building=True,
-        clear_floor=True
-    )
+        gateways_unassigned = safe_unassign_gateways(
+            conn,
+            building_ids=[building_id],
+            floor_ids=floor_ids,
+            clear_building=True,
+            clear_floor=True
+        )
 
-    deleted_user_access = conn.execute("""
+        deleted_user_access = conn.execute("""
         DELETE FROM user_access
         WHERE building_id = ?
     """, (building_id,)).rowcount
 
-    if floor_ids:
-        placeholders = ",".join("?" for _ in floor_ids)
-        deleted_user_access += conn.execute(f"""
+        if floor_ids:
+            placeholders = ",".join("?" for _ in floor_ids)
+            deleted_user_access += conn.execute(f"""
             DELETE FROM user_access
             WHERE floor_id IN ({placeholders})
         """, floor_ids).rowcount
 
-    deleted_rooms = delete_by_ids(conn, "rooms", room_ids)
-    deleted_floorplans = delete_by_ids(conn, "floorplans", floorplan_ids)
-    deleted_floors = delete_by_ids(conn, "floors", floor_ids)
+        deleted_rooms = delete_by_ids(conn, "rooms", room_ids)
+        deleted_floorplans = delete_by_ids(conn, "floorplans", floorplan_ids)
+        deleted_floors = delete_by_ids(conn, "floors", floor_ids)
 
-    conn.execute("""
+        conn.execute("""
         DELETE FROM buildings
         WHERE id = ?
     """, (building_id,))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
-    return {
-        "status": "deleted",
-        "building_id": building_id,
-        "deleted": {
-            "floors": deleted_floors,
-            "rooms": deleted_rooms,
-            "floorplans": deleted_floorplans,
-            "user_access_records": deleted_user_access
-        },
-        "devices_preserved_and_unassigned": devices_count,
-        "gateways_preserved_and_unassigned": gateways_unassigned
-    }
+        return {
+            "status": "deleted",
+            "building_id": building_id,
+            "deleted": {
+                "floors": deleted_floors,
+                "rooms": deleted_rooms,
+                "floorplans": deleted_floorplans,
+                "user_access_records": deleted_user_access
+            },
+            "devices_preserved_and_unassigned": devices_count,
+            "gateways_preserved_and_unassigned": gateways_unassigned
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.delete("/floors/{floor_id}")
 def delete_floor(floor_id: int):
     conn = db()
+    try:
 
-    floor = conn.execute("""
+        floor = conn.execute("""
         SELECT *
         FROM floors
         WHERE id = ?
     """, (floor_id,)).fetchone()
 
-    if not floor:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Floor not found")
+        if not floor:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Floor not found")
 
-    room_rows = conn.execute("""
+        room_rows = conn.execute("""
         SELECT *
         FROM rooms
         WHERE floor_id = ?
-           OR floorplan_id = ?
-    """, (floor_id, floor_id)).fetchall()
+    """, (floor_id,)).fetchall()
 
-    room_ids = [row["id"] for row in room_rows]
-    floorplan_ids = get_floorplan_ids_for_floors_and_rooms(conn, [floor_id], room_ids)
+        room_ids = [row["id"] for row in room_rows]
+        floorplan_ids = get_floorplan_ids_for_floors_and_rooms(conn, [floor_id], room_ids)
 
-    devices_count = conn.execute("""
+        devices_count = conn.execute("""
         SELECT COUNT(*)
         FROM devices
         WHERE floor_id = ?
@@ -662,11 +764,10 @@ def delete_floor(floor_id: int):
                 SELECT id
                 FROM rooms
                 WHERE floor_id = ?
-                   OR floorplan_id = ?
            )
-    """, (floor_id, floor_id, floor_id)).fetchone()[0]
+    """, (floor_id, floor_id)).fetchone()[0]
 
-    conn.execute("""
+        conn.execute("""
         UPDATE devices
         SET floor_id = NULL,
             room_id = NULL,
@@ -679,43 +780,50 @@ def delete_floor(floor_id: int):
                 SELECT id
                 FROM rooms
                 WHERE floor_id = ?
-                   OR floorplan_id = ?
            )
-    """, (floor_id, floor_id, floor_id))
+    """, (floor_id, floor_id))
 
-    gateways_unassigned = safe_unassign_gateways(
-        conn,
-        floor_ids=[floor_id],
-        clear_floor=True
-    )
+        gateways_unassigned = safe_unassign_gateways(
+            conn,
+            floor_ids=[floor_id],
+            clear_floor=True
+        )
 
-    deleted_user_access = conn.execute("""
+        deleted_user_access = conn.execute("""
         DELETE FROM user_access
         WHERE floor_id = ?
     """, (floor_id,)).rowcount
 
-    deleted_rooms = delete_by_ids(conn, "rooms", room_ids)
-    deleted_floorplans = delete_by_ids(conn, "floorplans", floorplan_ids)
+        deleted_rooms = delete_by_ids(conn, "rooms", room_ids)
+        deleted_floorplans = delete_by_ids(conn, "floorplans", floorplan_ids)
 
-    conn.execute("""
+        conn.execute("""
         DELETE FROM floors
         WHERE id = ?
     """, (floor_id,))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
-    return {
-        "status": "deleted",
-        "floor_id": floor_id,
-        "deleted": {
-            "rooms": deleted_rooms,
-            "floorplans": deleted_floorplans,
-            "user_access_records": deleted_user_access
-        },
-        "devices_preserved_and_unassigned": devices_count,
-        "gateways_preserved_and_unassigned": gateways_unassigned
-    }
+        return {
+            "status": "deleted",
+            "floor_id": floor_id,
+            "deleted": {
+                "rooms": deleted_rooms,
+                "floorplans": deleted_floorplans,
+                "user_access_records": deleted_user_access
+            },
+            "devices_preserved_and_unassigned": devices_count,
+            "gateways_preserved_and_unassigned": gateways_unassigned
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.put("/sites/{site_id}")
 def update_site(site_id: int, data: dict):
     name = data.get("name", "").strip()
@@ -724,25 +832,34 @@ def update_site(site_id: int, data: dict):
         raise HTTPException(status_code=400, detail="Site name required")
 
     conn = db()
+    try:
 
-    cur = conn.execute("""
+        cur = conn.execute("""
         UPDATE sites
         SET name = ?
         WHERE id = ?
     """, (name, site_id))
 
-    conn.commit()
-    updated = cur.rowcount
-    conn.close()
+        conn.commit()
+        updated = cur.rowcount
+        conn.close()
 
-    if updated == 0:
-        raise HTTPException(status_code=404, detail="Site not found")
+        if updated == 0:
+            raise HTTPException(status_code=404, detail="Site not found")
 
-    return {
-        "status": "updated",
-        "site_id": site_id,
-        "name": name,
-    }
+        return {
+            "status": "updated",
+            "site_id": site_id,
+            "name": name,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.put("/buildings/{building_id}")
 def update_building(building_id: int, data: dict):
     name = data.get("name", "").strip()
@@ -751,25 +868,34 @@ def update_building(building_id: int, data: dict):
         raise HTTPException(status_code=400, detail="Building name required")
 
     conn = db()
+    try:
 
-    cur = conn.execute("""
+        cur = conn.execute("""
         UPDATE buildings
         SET name = ?
         WHERE id = ?
     """, (name, building_id))
 
-    conn.commit()
-    updated = cur.rowcount
-    conn.close()
+        conn.commit()
+        updated = cur.rowcount
+        conn.close()
 
-    if updated == 0:
-        raise HTTPException(status_code=404, detail="Building not found")
+        if updated == 0:
+            raise HTTPException(status_code=404, detail="Building not found")
 
-    return {
-        "status": "updated",
-        "building_id": building_id,
-        "name": name,
-    }
+        return {
+            "status": "updated",
+            "building_id": building_id,
+            "name": name,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.put("/floors/{floor_id}")
 def update_floor(floor_id: int, data: dict):
     name = data.get("name", "").strip()
@@ -779,27 +905,36 @@ def update_floor(floor_id: int, data: dict):
         raise HTTPException(status_code=400, detail="Floor name required")
 
     conn = db()
+    try:
 
-    cur = conn.execute("""
+        cur = conn.execute("""
         UPDATE floors
         SET name = ?,
             floor_number = ?
         WHERE id = ?
     """, (name, floor_number, floor_id))
 
-    conn.commit()
-    updated = cur.rowcount
-    conn.close()
+        conn.commit()
+        updated = cur.rowcount
+        conn.close()
 
-    if updated == 0:
-        raise HTTPException(status_code=404, detail="Floor not found")
+        if updated == 0:
+            raise HTTPException(status_code=404, detail="Floor not found")
 
-    return {
-        "status": "updated",
-        "floor_id": floor_id,
-        "name": name,
-        "floor_number": floor_number,
-    }
+        return {
+            "status": "updated",
+            "floor_id": floor_id,
+            "name": name,
+            "floor_number": floor_number,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.post("/floors/{floor_id}/rooms")
 def create_room_for_floor(floor_id: int, data: dict):
     room_name = data.get("room_name", "").strip()
@@ -812,80 +947,94 @@ def create_room_for_floor(floor_id: int, data: dict):
         raise HTTPException(status_code=400, detail="polygon_points must contain at least 3 points")
 
     conn = db()
+    try:
 
-    floor = conn.execute("""
+        floor = conn.execute("""
         SELECT f.*, b.name AS building_name
         FROM floors f
         JOIN buildings b ON f.building_id = b.id
         WHERE f.id = ?
     """, (floor_id,)).fetchone()
 
-    if not floor:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Floor not found")
+        if not floor:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Floor not found")
 
-    x_values = [p["x"] for p in polygon_points]
-    y_values = [p["y"] for p in polygon_points]
+        try:
+            x_values = [p["x"] for p in polygon_points]
+            y_values = [p["y"] for p in polygon_points]
 
-    center_x = int(sum(x_values) / len(x_values))
-    center_y = int(sum(y_values) / len(y_values))
+            center_x = int(sum(x_values) / len(x_values))
+            center_y = int(sum(y_values) / len(y_values))
 
-    cur = conn.execute("""
+        except Exception:
+            conn.close()
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid polygon_points format"
+            )
+
+        cur = conn.execute("""
         INSERT INTO rooms (
-            floorplan_id,
             floor_id,
-            building,
-            floor,
             room_name,
             polygon_points,
             x,
             y
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?)
     """, (
-        0,
-        floor_id,
-        floor["building_name"],
-        floor["name"],
-        room_name,
-        json.dumps(polygon_points),
-        center_x,
-        center_y,
-    ))
+            floor_id,
+            room_name,
+            json.dumps(polygon_points),
+            center_x,
+            center_y,
+        ))
 
-    conn.commit()
-    room_id = cur.lastrowid
-    conn.close()
+        conn.commit()
+        room_id = cur.lastrowid
+        conn.close()
 
-    return {
-        "status": "created",
-        "room_id": room_id,
-        "floor_id": floor_id,
-        "room_name": room_name,
-        "x": center_x,
-        "y": center_y,
-        "polygon_points": polygon_points,
-    }
+        return {
+            "status": "created",
+            "room_id": room_id,
+            "floor_id": floor_id,
+            "room_name": room_name,
+            "x": center_x,
+            "y": center_y,
+            "polygon_points": polygon_points,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/rooms/{room_id}")
 def get_room(room_id: int):
     conn = db()
+    try:
 
-    room = conn.execute("""
+        room = conn.execute("""
         SELECT *
         FROM rooms
         WHERE id = ?
     """, (room_id,)).fetchone()
 
-    conn.close()
+        conn.close()
 
-    if not room:
-        raise HTTPException(status_code=404, detail="Room not found")
+        if not room:
+            raise HTTPException(status_code=404, detail="Room not found")
 
-    result = dict(room)
+        result = dict(room)
 
-    if result.get("polygon_points"):
-        result["polygon_points"] = json.loads(result["polygon_points"])
+        if result.get("polygon_points"):
+            result["polygon_points"] = json.loads(result["polygon_points"])
 
-    return result
+        return result
+    finally:
+        conn.close()
 @router.post("/rooms/{room_id}/devices")
 def assign_device_to_room_post(room_id: int, data: dict):
 
@@ -898,8 +1047,9 @@ def assign_device_to_room_post(room_id: int, data: dict):
         )
 
     conn = db()
+    try:
 
-    room = conn.execute("""
+        room = conn.execute("""
         SELECT
             r.id as room_id,
             r.floor_id,
@@ -910,105 +1060,114 @@ def assign_device_to_room_post(room_id: int, data: dict):
         WHERE r.id = ?
     """, (room_id,)).fetchone()
 
-    if not room:
-        conn.close()
-        raise HTTPException(
-            status_code=404,
-            detail="Room not found"
-        )
+        if not room:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Room not found"
+            )
 
-    cur = conn.execute("""
+        cur = conn.execute("""
         UPDATE devices
         SET
             room_id = ?
         WHERE device_id = ?
     """, (
-        room_id,
-        device_id
-    ))
+            room_id,
+            device_id
+        ))
 
-    conn.commit()
+        conn.commit()
 
-    if cur.rowcount == 0:
+        if cur.rowcount == 0:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Device not found"
+            )
+
         conn.close()
-        raise HTTPException(
-            status_code=404,
-            detail="Device not found"
-        )
 
-    conn.close()
-
-    return {
-        "status": "assigned",
-        "device_id": device_id,
-        "room_id": room_id
-    }
+        return {
+            "status": "assigned",
+            "device_id": device_id,
+            "room_id": room_id
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/hierarchy")
 def get_hierarchy():
 
     conn = db()
+    try:
 
-    clients = conn.execute("""
+        clients = conn.execute("""
         SELECT *
         FROM clients
         ORDER BY name
     """).fetchall()
 
-    result = []
+        result = []
 
-    for client in clients:
+        for client in clients:
 
-        client_obj = dict(client)
-        client_obj["sites"] = []
+            client_obj = dict(client)
+            client_obj["sites"] = []
 
-        sites = conn.execute("""
+            sites = conn.execute("""
             SELECT *
             FROM sites
             WHERE client_id = ?
             ORDER BY name
         """, (client["id"],)).fetchall()
 
-        for site in sites:
+            for site in sites:
 
-            site_obj = dict(site)
-            site_obj["buildings"] = []
+                site_obj = dict(site)
+                site_obj["buildings"] = []
 
-            buildings = conn.execute("""
+                buildings = conn.execute("""
                 SELECT *
                 FROM buildings
                 WHERE site_id = ?
                 ORDER BY name
             """, (site["id"],)).fetchall()
 
-            for building in buildings:
+                for building in buildings:
 
-                building_obj = dict(building)
-                building_obj["floors"] = []
+                    building_obj = dict(building)
+                    building_obj["floors"] = []
 
-                floors = conn.execute("""
+                    floors = conn.execute("""
                     SELECT *
                     FROM floors
                     WHERE building_id = ?
                     ORDER BY floor_number
                 """, (building["id"],)).fetchall()
 
-                for floor in floors:
+                    for floor in floors:
 
-                    floor_obj = dict(floor)
-                    floor_obj["rooms"] = []
+                        floor_obj = dict(floor)
+                        floor_obj["rooms"] = []
 
-                    rooms = conn.execute("""
+                        rooms = conn.execute("""
                         SELECT *
                         FROM rooms
                         WHERE floor_id = ?
                         ORDER BY room_name
                     """, (floor["id"],)).fetchall()
 
-                    for room in rooms:
+                        for room in rooms:
 
-                        room_obj = dict(room)
+                            room_obj = dict(room)
 
-                        devices = conn.execute("""
+                            devices = conn.execute("""
                             SELECT
                                 device_id,
                                 node_type,
@@ -1023,46 +1182,49 @@ def get_hierarchy():
                             ORDER BY label
                         """, (room["id"],)).fetchall()
 
-                        room_obj["devices"] = [
-                            dict(d)
-                            for d in devices
-                        ]
+                            room_obj["devices"] = [
+                                dict(d)
+                                for d in devices
+                            ]
 
-                        floor_obj["rooms"].append(room_obj)
+                            floor_obj["rooms"].append(room_obj)
 
-                    building_obj["floors"].append(floor_obj)
+                        building_obj["floors"].append(floor_obj)
 
-                site_obj["buildings"].append(building_obj)
+                    site_obj["buildings"].append(building_obj)
 
-            client_obj["sites"].append(site_obj)
+                client_obj["sites"].append(site_obj)
 
-        result.append(client_obj)
+            result.append(client_obj)
 
-    conn.close()
+        conn.close()
 
-    return result
+        return result
+    finally:
+        conn.close()
 @router.post("/sites/{site_id}/upload-site-map")
 async def upload_site_map(
     site_id: int,
     image: UploadFile = File(...)
 ):
     conn = db()
+    try:
 
-    site = conn.execute("""
+        site = conn.execute("""
         SELECT *
         FROM sites
         WHERE id = ?
     """, (site_id,)).fetchone()
 
-    if not site:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Site not found")
+        if not site:
+            conn.close()
+            raise HTTPException(status_code=404, detail="Site not found")
 
-    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", site["name"])
-    filename, width, height = await save_image_securely(image, UPLOAD_DIR, prefix=f"site_{site_id}_{safe_name}")
-    image_path = f"/uploads/{filename}"
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", site["name"])
+        filename, width, height = await save_image_securely(image, UPLOAD_DIR, prefix=f"site_{site_id}_{safe_name}")
+        image_path = f"/uploads/{filename}"
 
-    conn.execute("""
+        conn.execute("""
         INSERT INTO site_maps (
             site_id,
             image_path,
@@ -1070,83 +1232,94 @@ async def upload_site_map(
             image_height
         ) VALUES (?, ?, ?, ?)
     """, (
-        site_id,
-        image_path,
-        width,
-        height,
-    ))
+            site_id,
+            image_path,
+            width,
+            height,
+        ))
 
-    conn.execute("""
+        conn.execute("""
         UPDATE sites
         SET campus_image_path = ?,
             image_width = ?,
             image_height = ?
         WHERE id = ?
     """, (
-        image_path,
-        width,
-        height,
-        site_id,
-    ))
+            image_path,
+            width,
+            height,
+            site_id,
+        ))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
-    return {
-        "status": "uploaded",
-        "site_id": site_id,
-        "image_path": image_path,
-        "image_width": width,
-        "image_height": height,
-    }
+        return {
+            "status": "uploaded",
+            "site_id": site_id,
+            "image_path": image_path,
+            "image_width": width,
+            "image_height": height,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/sites/{site_id}/map")
 def get_site_map(site_id: int):
 
     conn = db()
+    try:
 
-    site = conn.execute("""
+        site = conn.execute("""
         SELECT *
         FROM sites
         WHERE id = ?
     """, (site_id,)).fetchone()
 
-    if not site:
-        conn.close()
-        raise HTTPException(
-            status_code=404,
-            detail="Site not found"
-        )
+        if not site:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Site not found"
+            )
 
-    buildings = conn.execute("""
+        buildings = conn.execute("""
         SELECT *
         FROM buildings
         WHERE site_id = ?
         ORDER BY name
     """, (site_id,)).fetchall()
 
-    conn.close()
+        conn.close()
 
-    result = {
-        "site": dict(site),
-        "buildings": []
-    }
+        result = {
+            "site": dict(site),
+            "buildings": []
+        }
 
-    for b in buildings:
+        for b in buildings:
 
-        item = dict(b)
+            item = dict(b)
 
-        try:
-            item["polygon_points"] = (
-                json.loads(item["polygon_points"])
-                if item["polygon_points"]
-                else []
-            )
-        except:
-            item["polygon_points"] = []
+            try:
+                item["polygon_points"] = (
+                    json.loads(item["polygon_points"])
+                    if item["polygon_points"]
+                    else []
+                )
+            except Exception:
+                item["polygon_points"] = []
 
-        result["buildings"].append(item)
+            result["buildings"].append(item)
 
-    return result
+        return result
+    finally:
+        conn.close()
 @router.put("/buildings/{building_id}/polygon")
 def update_building_polygon(
     building_id: int,
@@ -1161,15 +1334,23 @@ def update_building_polygon(
             detail="At least 3 points required"
         )
 
-    x_values = [p["x"] for p in polygon_points]
-    y_values = [p["y"] for p in polygon_points]
+    try:
+        x_values = [p["x"] for p in polygon_points]
+        y_values = [p["y"] for p in polygon_points]
 
-    center_x = int(sum(x_values) / len(x_values))
-    center_y = int(sum(y_values) / len(y_values))
+        center_x = int(sum(x_values) / len(x_values))
+        center_y = int(sum(y_values) / len(y_values))
+
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid polygon_points format"
+        )
 
     conn = db()
+    try:
 
-    cur = conn.execute("""
+        cur = conn.execute("""
         UPDATE buildings
         SET
             polygon_points = ?,
@@ -1177,136 +1358,153 @@ def update_building_polygon(
             y = ?
         WHERE id = ?
     """, (
-        json.dumps(polygon_points),
-        center_x,
-        center_y,
-        building_id
-    ))
+            json.dumps(polygon_points),
+            center_x,
+            center_y,
+            building_id
+        ))
 
-    conn.commit()
+        conn.commit()
 
-    if cur.rowcount == 0:
+        if cur.rowcount == 0:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Building not found"
+            )
+
         conn.close()
-        raise HTTPException(
-            status_code=404,
-            detail="Building not found"
-        )
 
-    conn.close()
-
-    return {
-        "status": "updated",
-        "building_id": building_id,
-        "center_x": center_x,
-        "center_y": center_y,
-        "polygon_points": polygon_points
-    }
+        return {
+            "status": "updated",
+            "building_id": building_id,
+            "center_x": center_x,
+            "center_y": center_y,
+            "polygon_points": polygon_points
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/sites/{site_id}/buildings")
 def get_site_buildings(site_id: int):
 
     conn = db()
+    try:
 
-    rows = conn.execute("""
+        rows = conn.execute("""
         SELECT *
         FROM buildings
         WHERE site_id = ?
         ORDER BY name
     """, (site_id,)).fetchall()
 
-    conn.close()
+        conn.close()
 
-    result = []
+        result = []
 
-    for row in rows:
+        for row in rows:
 
-        item = dict(row)
+            item = dict(row)
 
-        try:
-            item["polygon_points"] = (
-                json.loads(item["polygon_points"])
-                if item["polygon_points"]
-                else []
-            )
-        except:
-            item["polygon_points"] = []
+            try:
+                item["polygon_points"] = (
+                    json.loads(item["polygon_points"])
+                    if item["polygon_points"]
+                    else []
+                )
+            except Exception:
+                item["polygon_points"] = []
 
-        result.append(item)
+            result.append(item)
 
-    return result
+        return result
+    finally:
+        conn.close()
 @router.get("/buildings/{building_id}/floors")
 def get_building_floors(building_id: int):
 
     conn = db()
+    try:
 
-    rows = conn.execute("""
+        rows = conn.execute("""
         SELECT *
         FROM floors
         WHERE building_id = ?
         ORDER BY floor_number
     """, (building_id,)).fetchall()
 
-    conn.close()
+        conn.close()
 
-    return [dict(r) for r in rows]
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 @router.get("/floors/{floor_id}/details")
 def get_floor_details(floor_id: int):
 
     conn = db()
+    try:
 
-    floor = conn.execute("""
+        floor = conn.execute("""
         SELECT *
         FROM floors
         WHERE id = ?
     """, (floor_id,)).fetchone()
 
-    if not floor:
-        conn.close()
-        raise HTTPException(
-            status_code=404,
-            detail="Floor not found"
-        )
+        if not floor:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Floor not found"
+            )
 
-    rooms = conn.execute("""
+        rooms = conn.execute("""
         SELECT *
         FROM rooms
         WHERE floor_id = ?
         ORDER BY room_name
     """, (floor_id,)).fetchall()
 
-    result = {
-        "floor": dict(floor),
-        "rooms": []
-    }
+        result = {
+            "floor": dict(floor),
+            "rooms": []
+        }
 
-    for room in rooms:
+        for room in rooms:
 
-        room_obj = dict(room)
+            room_obj = dict(room)
 
-        try:
-            room_obj["polygon_points"] = (
-                json.loads(room_obj["polygon_points"])
-                if room_obj["polygon_points"]
-                else []
-            )
-        except:
-            room_obj["polygon_points"] = []
+            try:
+                room_obj["polygon_points"] = (
+                    json.loads(room_obj["polygon_points"])
+                    if room_obj["polygon_points"]
+                    else []
+                )
+            except Exception:
+                room_obj["polygon_points"] = []
 
-        devices = conn.execute("""
+            devices = conn.execute("""
             SELECT *
             FROM devices
             WHERE room_id = ?
         """, (room["id"],)).fetchall()
 
-        room_obj["devices"] = [
-            dict(d)
-            for d in devices
-        ]
+            room_obj["devices"] = [
+                dict(d)
+                for d in devices
+            ]
 
-        result["rooms"].append(room_obj)
+            result["rooms"].append(room_obj)
 
-    conn.close()
+        conn.close()
 
-    return result
+        return result
+    finally:
+        conn.close()
 @router.get("/floors/{floor_id}/live")
 def get_floor_live(floor_id: int):
     """
@@ -1352,10 +1550,6 @@ def get_floor_live(floor_id: int):
             "floor_number"
         )
 
-        building_name = floor_dict.get(
-            "building_name"
-        )
-
         # =====================================================
         # 2. LOAD FLOOR ROOMS
         # =====================================================
@@ -1365,30 +1559,9 @@ def get_floor_live(floor_id: int):
             SELECT *
             FROM rooms
             WHERE floor_id = ?
-
-               OR floorplan_id IN (
-                    SELECT id
-                    FROM floorplans
-                    WHERE floor_id = ?
-               )
-
-               OR (
-                    building = ?
-                    AND (
-                        floor = ?
-                        OR floor = ?
-                    )
-               )
-
             ORDER BY room_name
             """,
-            (
-                floor_id,
-                floor_id,
-                building_name,
-                floor_name,
-                floor_number,
-            ),
+            (floor_id,),
         ).fetchall()
 
         result = {
@@ -1537,7 +1710,7 @@ def get_floor_live(floor_id: int):
                 except Exception as exc:
                     logger.info(
                         "ThingsBoard telemetry failed "
-                        "in floor live:",
+                        "in floor live: %s",
                         exc,
                     )
 
@@ -1559,7 +1732,7 @@ def get_floor_live(floor_id: int):
                 except Exception as exc:
                     logger.info(
                         "Local telemetry failed "
-                        "in floor live:",
+                        "in floor live: %s",
                         exc,
                     )
 
@@ -1723,7 +1896,7 @@ def get_floor_live(floor_id: int):
         except Exception as exc:
             logger.info(
                 "Gateway loading failed "
-                "in floor live:",
+                "in floor live: %s",
                 exc,
             )
 
@@ -1736,86 +1909,99 @@ def get_floor_live(floor_id: int):
 @router.delete("/buildings/{building_id}/polygon")
 def delete_building_polygon(building_id: int):
     conn = db()
+    try:
 
-    cur = conn.execute("""
+        cur = conn.execute("""
         UPDATE buildings
         SET polygon_points = ?,
             x = NULL,
             y = NULL
         WHERE id = ?
     """, (
-        json.dumps([]),
-        building_id,
-    ))
+            json.dumps([]),
+            building_id,
+        ))
 
-    conn.commit()
-    updated = cur.rowcount
-    conn.close()
+        conn.commit()
+        updated = cur.rowcount
+        conn.close()
 
-    if updated == 0:
-        raise HTTPException(status_code=404, detail="Building not found")
+        if updated == 0:
+            raise HTTPException(status_code=404, detail="Building not found")
 
-    return {
-        "status": "polygon_deleted",
-        "building_id": building_id,
-    }
+        return {
+            "status": "polygon_deleted",
+            "building_id": building_id,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/buildings/{building_id}/overview")
 def get_building_overview(building_id: int):
 
     conn = db()
+    try:
 
-    building = conn.execute("""
+        building = conn.execute("""
         SELECT *
         FROM buildings
         WHERE id = ?
     """, (building_id,)).fetchone()
 
-    if not building:
-        conn.close()
-        raise HTTPException(
-            status_code=404,
-            detail="Building not found"
-        )
+        if not building:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Building not found"
+            )
 
-    floors = conn.execute("""
+        floors = conn.execute("""
         SELECT *
         FROM floors
         WHERE building_id = ?
         ORDER BY floor_number
     """, (building_id,)).fetchall()
 
-    result = {
-        "building": dict(building),
-        "floors": [dict(f) for f in floors]
-    }
+        result = {
+            "building": dict(building),
+            "floors": [dict(f) for f in floors]
+        }
 
-    conn.close()
+        conn.close()
 
-    return result
+        return result
+    finally:
+        conn.close()
 @router.delete("/rooms/{room_id}")
 def delete_room(room_id: int):
     conn = db()
+    try:
 
-    room = conn.execute("""
+        room = conn.execute("""
         SELECT *
         FROM rooms
         WHERE id = ?
     """, (room_id,)).fetchone()
 
-    if not room:
-        conn.close()
-        raise HTTPException(
-            status_code=404,
-            detail="Room not found"
-        )
+        if not room:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Room not found"
+            )
 
-    devices_count = conn.execute("""
+        devices_count = conn.execute("""
         SELECT COUNT(*)
         FROM devices
         WHERE room_id = ?
     """, (room_id,)).fetchone()[0]
 
-    conn.execute("""
+        conn.execute("""
         UPDATE devices
         SET room_id = NULL,
             room = NULL,
@@ -1824,54 +2010,71 @@ def delete_room(room_id: int):
         WHERE room_id = ?
     """, (room_id,))
 
-    conn.execute("""
+        conn.execute("""
         DELETE FROM rooms
         WHERE id = ?
     """, (room_id,))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
-    return {
-        "status": "deleted",
-        "room_id": room_id,
-        "devices_preserved_and_unassigned": devices_count
-    }
+        return {
+            "status": "deleted",
+            "room_id": room_id,
+            "devices_preserved_and_unassigned": devices_count
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.put("/rooms/{room_id}")
 def update_room(room_id: int, data: dict):
     room_name = data.get("room_name", "").strip()
-    polygon_points = data.get("polygon_points", None)
+    polygon_points = data.get("polygon_points")
 
     if not room_name:
         raise HTTPException(status_code=400, detail="room_name required")
 
     conn = db()
+    try:
 
-    room = conn.execute("""
+        room = conn.execute("""
         SELECT *
         FROM rooms
         WHERE id = ?
     """, (room_id,)).fetchone()
 
-    if not room:
-        conn.close()
-        raise HTTPException(status_code=404, detail="Room not found")
-
-    if polygon_points is not None:
-        if not isinstance(polygon_points, list) or len(polygon_points) < 3:
+        if not room:
             conn.close()
-            raise HTTPException(
-                status_code=400,
-                detail="polygon_points must contain at least 3 points"
-            )
+            raise HTTPException(status_code=404, detail="Room not found")
 
-        x_values = [p["x"] for p in polygon_points]
-        y_values = [p["y"] for p in polygon_points]
+        if polygon_points is not None:
+            if not isinstance(polygon_points, list) or len(polygon_points) < 3:
+                conn.close()
+                raise HTTPException(
+                    status_code=400,
+                    detail="polygon_points must contain at least 3 points"
+                )
 
-        center_x = int(sum(x_values) / len(x_values))
-        center_y = int(sum(y_values) / len(y_values))
+            try:
+                x_values = [p["x"] for p in polygon_points]
+                y_values = [p["y"] for p in polygon_points]
 
-        conn.execute("""
+                center_x = int(sum(x_values) / len(x_values))
+                center_y = int(sum(y_values) / len(y_values))
+
+            except Exception:
+                conn.close()
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid polygon_points format"
+                )
+
+            conn.execute("""
             UPDATE rooms
             SET room_name = ?,
                 polygon_points = ?,
@@ -1879,73 +2082,84 @@ def update_room(room_id: int, data: dict):
                 y = ?
             WHERE id = ?
         """, (
-            room_name,
-            json.dumps(polygon_points),
-            center_x,
-            center_y,
-            room_id,
-        ))
+                room_name,
+                json.dumps(polygon_points),
+                center_x,
+                center_y,
+                room_id,
+            ))
 
-    else:
-        conn.execute("""
+        else:
+            conn.execute("""
             UPDATE rooms
             SET room_name = ?
             WHERE id = ?
         """, (
-            room_name,
-            room_id,
-        ))
+                room_name,
+                room_id,
+            ))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
 
-    return {
-        "status": "updated",
-        "room_id": room_id,
-        "room_name": room_name,
-    }
+        return {
+            "status": "updated",
+            "room_id": room_id,
+            "room_name": room_name,
+        }
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 @router.get("/floors/{floor_id}/rooms")
 def get_floor_rooms(floor_id: int):
 
     conn = db()
+    try:
 
-    floor = conn.execute("""
+        floor = conn.execute("""
         SELECT *
         FROM floors
         WHERE id = ?
     """, (floor_id,)).fetchone()
 
-    if not floor:
-        conn.close()
-        raise HTTPException(
-            status_code=404,
-            detail="Floor not found"
-        )
+        if not floor:
+            conn.close()
+            raise HTTPException(
+                status_code=404,
+                detail="Floor not found"
+            )
 
-    rooms = conn.execute("""
+        rooms = conn.execute("""
         SELECT *
         FROM rooms
         WHERE floor_id = ?
         ORDER BY room_name
     """, (floor_id,)).fetchall()
 
-    result = []
+        result = []
 
-    for room in rooms:
+        for room in rooms:
 
-        room_obj = dict(room)
+            room_obj = dict(room)
 
-        try:
-            room_obj["polygon_points"] = (
-                json.loads(room_obj["polygon_points"])
-                if room_obj["polygon_points"]
-                else []
-            )
-        except:
-            room_obj["polygon_points"] = []
+            try:
+                room_obj["polygon_points"] = (
+                    json.loads(room_obj["polygon_points"])
+                    if room_obj["polygon_points"]
+                    else []
+                )
+            except Exception:
+                room_obj["polygon_points"] = []
 
-        result.append(room_obj)
+            result.append(room_obj)
 
-    conn.close()
+        conn.close()
 
-    return result
+        return result
+    finally:
+        conn.close()

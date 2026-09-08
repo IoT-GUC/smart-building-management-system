@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, Dict
+from typing import Any
 
 import requests
 
@@ -45,7 +45,7 @@ class ThingsBoardClient:
             logger.error(f"Failed to authenticate with ThingsBoard: {e}")
             raise
 
-    def get_headers(self, force_refresh: bool = False) -> Dict[str, str]:
+    def get_headers(self, force_refresh: bool = False) -> dict[str, str]:
         token = self.login(force_refresh=force_refresh)
         return {
             "X-Authorization": f"Bearer {token}",
@@ -79,7 +79,7 @@ class ThingsBoardClient:
             logger.error(f"ThingsBoard request failed [{method} {path}]: {e}")
             raise
 
-    def get_device_by_name(self, device_name: str) -> Dict[str, Any] | None:
+    def get_device_by_name(self, device_name: str) -> dict[str, Any] | None:
         try:
             r = self.request(
                 "GET",

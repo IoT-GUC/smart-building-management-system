@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import pytest
 import sqlite3
 from unittest.mock import patch
-from pydantic import ValidationError
+
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.schemas.core import Device
 

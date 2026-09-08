@@ -1,18 +1,24 @@
 import logging
+
 logger = logging.getLogger(__name__)
 
-import os
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form, Query, BackgroundTasks
-from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, FileResponse, RedirectResponse
-import json
-import sqlite3
-import csv
 import io
 import re
+import sqlite3
 import zipfile
-from app.db.connection import get_db_connection as db
-from app.main import get_firmware_module_detail, log_audit_event
 
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+
+from app.db.connection import get_db_connection as db
+from app.main import (
+    get_firmware_module_detail,
+    log_audit_event,
+    normalize_firmware_module_definition,
+    profile_utc_now_iso,
+    sensor_profile_actor_from_request,
+    set_firmware_module_enabled_api,
+)
 
 router = APIRouter()
 
@@ -246,7 +252,7 @@ def create_firmware_module_api(
 
     except Exception as error:
         conn.rollback()
-        logger.error("Create firmware module error:", error)
+        logger.error("Create firmware module error: %s", error)
         raise HTTPException(
             status_code=500,
             detail="Could not register the firmware module",
@@ -371,7 +377,7 @@ def update_firmware_module_api(
 
     except Exception as error:
         conn.rollback()
-        logger.error("Update firmware module error:", error)
+        logger.error("Update firmware module error: %s", error)
         raise HTTPException(
             status_code=500,
             detail="Could not update the firmware module",
@@ -473,7 +479,7 @@ def delete_firmware_module_api(
 
     except Exception as error:
         conn.rollback()
-        logger.error("Delete firmware module error:", error)
+        logger.error("Delete firmware module error: %s", error)
         raise HTTPException(
             status_code=500,
             detail="Could not delete the firmware module",

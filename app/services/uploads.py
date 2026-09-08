@@ -1,7 +1,8 @@
 import os
 import uuid
 from io import BytesIO
-from fastapi import UploadFile, HTTPException
+
+from fastapi import HTTPException, UploadFile
 from PIL import Image
 
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024 # 5 MB
@@ -60,5 +61,5 @@ async def save_image_securely(file: UploadFile, directory: str, prefix: str = ""
         
     except Exception as e:
         if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
+            raise
+        raise HTTPException(status_code=400, detail=f"Invalid image file: {e!s}")

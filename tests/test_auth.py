@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
-from fastapi.testclient import TestClient
-from app.main import create_login_session, create_password_hash
 
+from fastapi.testclient import TestClient
+
+from app.main import create_login_session, create_password_hash
 
 
 def test_auth_session_revoked_on_disable(client: TestClient, db_conn: sqlite3.Connection):

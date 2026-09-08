@@ -1,10 +1,5 @@
-import sqlite3
-import json
-from datetime import datetime, timezone
-from app.config import settings
 
 def check_thresholds(node_type: str, data: dict, capabilities: list[str] | None = None):
-    from app.main import db, normalize_mac, get_existing_device, profile_alarm_numeric_value, profile_alarm_values_equal, profile_alarm_expected_value, profile_alarm_rule_matches, format_profile_alarm_message, profile_alarm_runtime_now, parse_profile_alarm_timestamp, get_active_profile_alarm_records
 
     alarms = []
 
@@ -62,7 +57,6 @@ def check_thresholds(node_type: str, data: dict, capabilities: list[str] | None 
 
 
 def enrich_battery_telemetry(telemetry: dict):
-    from app.main import db, normalize_mac, get_existing_device, profile_alarm_numeric_value, profile_alarm_values_equal, profile_alarm_expected_value, profile_alarm_rule_matches, format_profile_alarm_message, profile_alarm_runtime_now, parse_profile_alarm_timestamp, get_active_profile_alarm_records
 
     telemetry = telemetry.copy()
     power_source = telemetry.get("power_source")
@@ -111,7 +105,6 @@ def enrich_battery_telemetry(telemetry: dict):
 
 
 def check_battery_alarms(telemetry: dict):
-    from app.main import db, normalize_mac, get_existing_device, profile_alarm_numeric_value, profile_alarm_values_equal, profile_alarm_expected_value, profile_alarm_rule_matches, format_profile_alarm_message, profile_alarm_runtime_now, parse_profile_alarm_timestamp, get_active_profile_alarm_records
 
     alarms = []
 
@@ -126,7 +119,6 @@ def check_battery_alarms(telemetry: dict):
 
 
 def enrich_signal_telemetry(ttn_data: dict, telemetry: dict):
-    from app.main import db, normalize_mac, get_existing_device, profile_alarm_numeric_value, profile_alarm_values_equal, profile_alarm_expected_value, profile_alarm_rule_matches, format_profile_alarm_message, profile_alarm_runtime_now, parse_profile_alarm_timestamp, get_active_profile_alarm_records
 
     telemetry = telemetry.copy()
 
@@ -200,7 +192,6 @@ def enrich_signal_telemetry(ttn_data: dict, telemetry: dict):
 
 
 def check_signal_alarms(telemetry: dict):
-    from app.main import db, normalize_mac, get_existing_device, profile_alarm_numeric_value, profile_alarm_values_equal, profile_alarm_expected_value, profile_alarm_rule_matches, format_profile_alarm_message, profile_alarm_runtime_now, parse_profile_alarm_timestamp, get_active_profile_alarm_records
 
     alarms = []
 

@@ -104,9 +104,22 @@ document.addEventListener("DOMContentLoaded", function () {
                     closeBulkImport();
                     location.reload();
                 }, 2000);
+            } else if (result.status === 'partial') {
+                // Some rows landed, some did not - report both rather than
+                // calling the whole upload a failure.
+                status.style.color = "#f59e0b";
+                status.innerText =
+                    \`Imported \${result.imported} devices, \${result.errors.length} row(s) failed: \` +
+                    result.errors.slice(0, 3).join("; ");
+                setTimeout(() => {
+                    closeBulkImport();
+                    location.reload();
+                }, 5000);
             } else {
                 status.style.color = "#ef4444";
-                status.innerText = result.message || "Upload failed.";
+                status.innerText = (result.errors && result.errors.length)
+                    ? \`Import failed: \${result.errors.slice(0, 3).join("; ")}\`
+                    : (result.message || result.detail || "Upload failed.");
             }
         } catch (e) {
             status.style.color = "#ef4444";

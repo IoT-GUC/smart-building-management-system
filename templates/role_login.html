@@ -4,7 +4,7 @@
 <head>
     <title>{{ title }}</title>
     <style>
-        body {{
+        body {
             margin: 0;
             font-family: Arial, sans-serif;
             background: #0f172a;
@@ -13,9 +13,9 @@
             display: flex;
             align-items: center;
             justify-content: center;
-        }}
+        }
 
-        .login-card {{
+        .login-card {
             width: 440px;
             max-width: calc(100% - 32px);
             background: #111827;
@@ -23,9 +23,9 @@
             border-radius: 18px;
             padding: 30px;
             box-shadow: 0 20px 70px rgba(0,0,0,0.45);
-        }}
+        }
 
-        .logo {{
+        .logo {
             width: 58px;
             height: 58px;
             border-radius: 16px;
@@ -35,9 +35,9 @@
             justify-content: center;
             font-weight: bold;
             margin-bottom: 18px;
-        }}
+        }
 
-        .badge {{
+        .badge {
             display: inline-block;
             padding: 6px 11px;
             border-radius: 999px;
@@ -47,29 +47,29 @@
             font-size: 12px;
             font-weight: bold;
             margin-bottom: 12px;
-        }}
+        }
 
-        h1 {{
+        h1 {
             margin: 0;
             font-size: 28px;
-        }}
+        }
 
-        p {{
+        p {
             margin: 8px 0 22px 0;
             color: #94a3b8;
             line-height: 1.5;
-        }}
+        }
 
-        label {{
+        label {
             display: block;
             margin-top: 14px;
             margin-bottom: 6px;
             color: #cbd5e1;
             font-weight: bold;
             font-size: 14px;
-        }}
+        }
 
-        input {{
+        input {
             width: 100%;
             box-sizing: border-box;
             padding: 13px 14px;
@@ -79,9 +79,9 @@
             color: white;
             font-size: 15px;
             outline: none;
-        }}
+        }
 
-        button {{
+        button {
             width: 100%;
             margin-top: 20px;
             padding: 13px 14px;
@@ -92,9 +92,9 @@
             font-weight: bold;
             cursor: pointer;
             font-size: 15px;
-        }}
+        }
 
-        .error {{
+        .error {
             display: none;
             margin-top: 14px;
             padding: 12px;
@@ -103,14 +103,14 @@
             border: 1px solid #ef4444;
             border-radius: 10px;
             font-size: 14px;
-        }}
+        }
 
-        .footer {{
+        .footer {
             margin-top: 18px;
             color: #64748b;
             font-size: 12px;
             text-align: center;
-        }}
+        }
     </style>
 </head>
 
@@ -138,7 +138,7 @@
 </div>
 
 <script>
-async function login() {{
+async function login() {
     const email = document.getElementById("email").value.trim();
     const password = document.getElementById("password").value;
     const errorBox = document.getElementById("errorBox");
@@ -146,50 +146,50 @@ async function login() {{
 
     errorBox.style.display = "none";
 
-    if (!email || !password) {{
+    if (!email || !password) {
         errorBox.innerText = "Email and password are required.";
         errorBox.style.display = "block";
         return;
-    }}
+    }
 
     loginButton.disabled = true;
     loginButton.innerText = "Logging in...";
 
     const nextUrl = new URLSearchParams(window.location.search).get("next") || "";
 
-    try {{
-        const res = await fetch("/auth/login", {{
+    try {
+        const res = await fetch("/auth/login", {
             method: "POST",
-            headers: {{"Content-Type": "application/json"}},
-            body: JSON.stringify({{
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
                 email: email,
                 password: password,
-                expected_role: "{login_type}",
+                expected_role: "{{ login_type }}",
                 next: nextUrl
-            }})
-        }});
+            })
+        });
 
         const data = await res.json();
 
-        if (!res.ok) {{
+        if (!res.ok) {
             throw new Error(data.detail || "Login failed");
-        }}
+        }
 
         window.location.href = data.redirect_to;
 
-    }} catch (err) {{
+    } catch (err) {
         errorBox.innerText = err.message;
         errorBox.style.display = "block";
         loginButton.disabled = false;
         loginButton.innerText = "Login";
-    }}
-}}
+    }
+}
 
-document.addEventListener("keydown", function(event) {{
-    if (event.key === "Enter") {{
+document.addEventListener("keydown", function(event) {
+    if (event.key === "Enter") {
         login();
-    }}
-}});
+    }
+});
 </script>
 </body>
 </html>

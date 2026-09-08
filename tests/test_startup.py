@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import sqlite3
-from app.db.connection import get_db_connection, run_migrations
+
+from app.db.connection import run_migrations
 
 
 def test_migrations_run_idempotent():

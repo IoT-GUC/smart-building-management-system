@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict
+from typing import Any
 
 import requests
 
@@ -15,7 +15,7 @@ class TTNClient:
         self.api_key = settings.TTN_API_KEY
         self.host = self.base_url.replace("https://", "").replace("http://", "")
 
-    def get_headers(self) -> Dict[str, str]:
+    def get_headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -42,7 +42,7 @@ class TTNClient:
 
     def create_application_device(
         self, device_id: str, dev_eui: str, join_eui: str, name: str, description: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         payload = {
             "end_device": {
                 "ids": {
@@ -87,7 +87,7 @@ class TTNClient:
 
     def create_join_server_entry(
         self, device_id: str, dev_eui: str, join_eui: str, app_key: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         payload = {
             "end_device": {
                 "ids": {
@@ -115,7 +115,7 @@ class TTNClient:
 
     def create_network_server_entry(
         self, device_id: str, dev_eui: str, join_eui: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         payload = {
             "end_device": {
                 "ids": {
@@ -145,7 +145,7 @@ class TTNClient:
 
     def create_application_server_entry(
         self, device_id: str, dev_eui: str, join_eui: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         payload = {
             "end_device": {
                 "ids": {
@@ -203,13 +203,13 @@ function decodeUplink(input) {
                 return
             raise
 
-    def get_gateway_info(self, gateway_id: str) -> Dict[str, Any]:
+    def get_gateway_info(self, gateway_id: str) -> dict[str, Any]:
         return self._request(
             "GET",
             f"/api/v3/gateways/{gateway_id}",
         ).json()
 
-    def get_gateway_stats(self, gateway_id: str) -> Dict[str, Any]:
+    def get_gateway_stats(self, gateway_id: str) -> dict[str, Any]:
         return self._request(
             "GET",
             f"/api/v3/gs/gateways/{gateway_id}/connection/stats",

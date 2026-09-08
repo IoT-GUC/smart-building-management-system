@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import List, Optional
 from pydantic import BaseModel
 
 
@@ -18,32 +17,32 @@ class Device(BaseModel):
     node_type: str
 
     # --- Canonical location (preferred: room_id) ---
-    room_id: Optional[int] = None
+    room_id: int | None = None
 
     # --- Temporary compatibility fields (derived from room_id when present) ---
-    building: Optional[str] = None
-    floor: Optional[str] = None
-    room: Optional[str] = None
+    building: str | None = None
+    floor: str | None = None
+    room: str | None = None
 
     # --- Stable sensor-profile identity ---
-    profile_id: Optional[int] = None
-    profile_code: Optional[str] = None
-    profile_version: Optional[int] = None
+    profile_id: int | None = None
+    profile_code: str | None = None
+    profile_version: int | None = None
 
     # --- Payload contract selected by the profile ---
-    payload_version: Optional[int] = None
-    payload_encoder_key: Optional[str] = None
-    uplink_interval_seconds: Optional[int] = None
-    firmware_version: Optional[str] = None
+    payload_version: int | None = None
+    payload_encoder_key: str | None = None
+    uplink_interval_seconds: int | None = None
+    firmware_version: str | None = None
 
     # --- Device capabilities (derived from profile when using profile flow) ---
-    capabilities: Optional[List[str]] = None
+    capabilities: list[str] | None = None
 
     # --- Display / floor-map metadata ---
-    label: Optional[str] = None
-    x: Optional[int] = None
-    y: Optional[int] = None
-    icon_type: Optional[str] = None
+    label: str | None = None
+    x: int | None = None
+    y: int | None = None
+    icon_type: str | None = None
 
 
 class ProfileAlarmTemplateValues(dict):

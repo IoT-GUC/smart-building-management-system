@@ -1,13 +1,14 @@
 import os
+
 import pytest
-import sqlite3
 
 # Point to a test database instead of production
 os.environ["DB_FILE"] = "test_smarthome.db"
 
-from app.main import app
-from app.db.connection import get_db_connection, run_migrations
 from fastapi.testclient import TestClient
+
+from app.db.connection import get_db_connection, run_migrations
+from app.main import app
 
 
 @pytest.fixture(scope="session", autouse=True)

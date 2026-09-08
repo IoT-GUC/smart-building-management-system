@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 router = APIRouter()
@@ -13,7 +13,24 @@ def login_page(request: Request):
 
 @router.get("/admin-login", response_class=HTMLResponse)
 def admin_login_page(request: Request):
-    return templates.TemplateResponse(request, "admin_login_page.html", {})
+    # This is where auth_middleware sends unauthenticated admin traffic, so it
+    # has to actually offer a credential form. It previously served a stale
+    # copy of the gateway monitor, which left no way to sign in at all.
+    from app.main import render_role_login_page
+
+    return render_role_login_page(
+        request,
+        login_type="admin",
+        title="Admin Login",
+        subtitle="Sign in to manage clients, devices, gateways and alarms.",
+        badge="ADMINISTRATOR",
+        accent="#2563eb",
+    )
+
+
+@router.get("/gateway-monitor", response_class=HTMLResponse)
+def gateway_monitor(request: Request):
+    return templates.TemplateResponse(request, "gateway_monitor.html", {})
 
 
 @router.get("/admin/gateway-placement", response_class=HTMLResponse)
@@ -88,7 +105,18 @@ def node_placement_editor(request: Request):
 
 @router.get("/client-login", response_class=HTMLResponse)
 def client_login_page(request: Request):
-    return templates.TemplateResponse(request, "client_login_page.html", {})
+    # client_login_page.html is the portal itself, not a login form; it is
+    # served from /client-portal once the session cookie exists.
+    from app.main import render_role_login_page
+
+    return render_role_login_page(
+        request,
+        login_type="client",
+        title="Client Login",
+        subtitle="Sign in to view your buildings, devices and alarms.",
+        badge="CLIENT",
+        accent="#0d9488",
+    )
 
 
 @router.get("/floor-live-view", response_class=HTMLResponse)

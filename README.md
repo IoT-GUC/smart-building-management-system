@@ -38,6 +38,16 @@ The active names include `DB_FILE`, TTN settings, `TB_USERNAME`, `TB_PASSWORD`,
 `ALERT_EMAIL_FROM`, `ALERT_EMAIL_TO`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`,
 `COOKIE_SECURE`, and `LOCAL_TEST_MODE`.
 
+Two settings gate real security behaviour:
+
+- **`TTN_WEBHOOK_SECRET` is required.** `/ttn-webhook` returns 503 to every
+  request while it is empty. Set the same value in the TTN webhook's
+  `X-Webhook-Secret` header.
+- **`CORS_ORIGINS`** is a comma-separated list of front-end origins. Empty
+  means same-origin only; there is no wildcard.
+
+Set `COOKIE_SECURE=true` for any deployment served over HTTPS.
+
 ## Portals
 
 - Admin: `/admin`
@@ -60,7 +70,8 @@ relational joins and migration tests pass against a copy of real data.
 
 ```bash
 python -m compileall -q app
-python tools/verify_repo.py
 pytest -q
 ruff check app tests
 ```
+
+These are the same three commands CI runs (`.github/workflows/ci.yml`).

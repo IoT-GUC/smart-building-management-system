@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 import glob
@@ -64,8 +65,17 @@ def run_migrations() -> None:
                 )
                 conn.commit()
             except Exception:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 raise
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 

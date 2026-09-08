@@ -1,42 +1,72 @@
 import logging
+
 logger = logging.getLogger(__name__)
 
-from fastapi.templating import Jinja2Templates
-import os
-import re
-import sqlite3
-import secrets
-import requests
-from app.services.thingsboard import tb_client
-from app.services.ttn import ttn_client
-import json
-import smtplib
-import shutil
-import csv
-import io
-import time
+import asyncio
 import hashlib
 import hmac
-from email.mime.text import MIMEText
+import json
+import os
+import re
+import secrets
+import smtplib
+import sqlite3
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from fastapi import UploadFile, File, Form
-from fastapi.staticfiles import StaticFiles
-import asyncio
-from app.services.websockets import manager
-from PIL import Image
-from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse, RedirectResponse, JSONResponse
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
+from email.mime.text import MIMEText
 from urllib.parse import quote
+
+import requests
+from dotenv import load_dotenv
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import (
+    JSONResponse,
+    RedirectResponse,
+)
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
 from app.schemas.core import Device, ProfileAlarmTemplateValues
+from app.services.thingsboard import tb_client
+from app.services.ttn import ttn_client
+from app.services.websockets import manager
+
 os.makedirs('uploads', exist_ok=True)
 load_dotenv()
 
+MAIN_EVENT_LOOP = None
+
+
+def schedule_broadcast(message, client_id=None, site_id=None):
+    """
+    Fire a websocket broadcast from either the event loop or a worker thread.
+
+    Blocking work now runs in a threadpool, where asyncio.create_task() has no
+    running loop to attach to, so the coroutine is handed back to the main
+    loop instead.
+    """
+    coro = manager.broadcast(message, client_id=client_id, site_id=site_id)
+    try:
+        asyncio.get_running_loop().create_task(coro)
+        return
+    except RuntimeError:
+        pass
+
+    if MAIN_EVENT_LOOP is not None and not MAIN_EVENT_LOOP.is_closed():
+        asyncio.run_coroutine_threadsafe(coro, MAIN_EVENT_LOOP)
+    else:
+        coro.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global MAIN_EVENT_LOOP
+    MAIN_EVENT_LOOP = asyncio.get_running_loop()
     from app.db.connection import run_migrations
     run_migrations()
     task = asyncio.create_task(offline_watchdog())
@@ -49,9 +79,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title='LILYGO Provisioning Server', lifespan=lifespan)
 templates = Jinja2Templates(directory='templates')
-app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_credentials=
-    False, allow_methods=['*'], allow_headers=['*'])
 from app.config import settings
+
+# CORS_ORIGINS existed in .env but was never wired in; the middleware was
+# hardcoded to '*', which let any site read every unauthenticated endpoint.
+_cors_origins = [
+    origin.strip()
+    for origin in (settings.CORS_ORIGINS or '').split(',')
+    if origin.strip()
+]
+if _cors_origins:
+    app.add_middleware(CORSMiddleware, allow_origins=_cors_origins,
+        allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
+else:
+    # No configured front-end origin: same-origin only. Cross-origin browser
+    # callers get no CORS headers rather than a blanket allow.
+    app.add_middleware(CORSMiddleware, allow_origins=[], allow_credentials=
+        False, allow_methods=['*'], allow_headers=['*'])
 DB = settings.DB_FILE
 UPLOAD_DIR = 'uploads'
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -1835,8 +1879,7 @@ def get_auto_room_position(conn: sqlite3.Connection, building: str, floor:
 def validate_provision_location_and_type(conn: sqlite3.Connection, device:
     Device):
     from app.services.provisioning import validate_provision_location_and_type
-    return validate_provision_location_and_type(conn, device, chip_mac,
-        node_type, resolved_room)
+    return validate_provision_location_and_type(conn, device)
 
 
 def safe_add_column(conn, table, column_def):
@@ -2898,18 +2941,19 @@ def safe_user_dict(user_row):
 
 def ensure_default_admin_user():
     conn = db()
-    existing_admin = conn.execute(
-        """
+    try:
+        existing_admin = conn.execute(
+            """
         SELECT *
         FROM users
         WHERE email = ?
         LIMIT 1
     """
-        , (ADMIN_EMAIL,)).fetchone()
-    password_data = create_password_hash(ADMIN_PASSWORD)
-    if not existing_admin:
-        conn.execute(
-            """
+            , (ADMIN_EMAIL,)).fetchone()
+        password_data = create_password_hash(ADMIN_PASSWORD)
+        if not existing_admin:
+            conn.execute(
+                """
             INSERT INTO users(
                 name,
                 email,
@@ -2922,22 +2966,22 @@ def ensure_default_admin_user():
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """
-            , ('System Admin', ADMIN_EMAIL, 'admin', 1, password_data[
-            'password_salt'], password_data['password_hash'], password_data
-            ['password_iterations']))
-        conn.commit()
-    else:
-        admin = dict(existing_admin)
-        needs_update = False
-        if admin.get('role') != 'admin':
-            needs_update = True
-        if admin.get('enabled') != 1:
-            needs_update = True
-        if not admin.get('password_hash'):
-            needs_update = True
-        if needs_update:
-            conn.execute(
-                """
+                , ('System Admin', ADMIN_EMAIL, 'admin', 1, password_data[
+                'password_salt'], password_data['password_hash'], password_data
+                ['password_iterations']))
+            conn.commit()
+        else:
+            admin = dict(existing_admin)
+            needs_update = False
+            if admin.get('role') != 'admin':
+                needs_update = True
+            if admin.get('enabled') != 1:
+                needs_update = True
+            if not admin.get('password_hash'):
+                needs_update = True
+            if needs_update:
+                conn.execute(
+                    """
                 UPDATE users
                 SET role = 'admin',
                     enabled = 1,
@@ -2947,11 +2991,19 @@ def ensure_default_admin_user():
                     password_updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """
-                , (password_data['password_salt'], password_data[
-                'password_hash'], password_data['password_iterations'],
-                admin['id']))
-            conn.commit()
-    conn.close()
+                    , (password_data['password_salt'], password_data[
+                    'password_hash'], password_data['password_iterations'],
+                    admin['id']))
+                conn.commit()
+        conn.close()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 
 
 def create_session_token():
@@ -3005,9 +3057,10 @@ def get_current_user_from_request(request: Request):
         return None
     token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
     conn = db()
-    cleanup_expired_sessions(conn)
-    session = conn.execute(
-        """
+    try:
+        cleanup_expired_sessions(conn)
+        session = conn.execute(
+            """
         SELECT *
         FROM auth_sessions
         WHERE token_hash = ?
@@ -3015,23 +3068,25 @@ def get_current_user_from_request(request: Request):
           AND datetime(expires_at) > datetime('now')
         LIMIT 1
     """
-        , (token_hash,)).fetchone()
-    if not session:
-        conn.close()
-        return None
-    user = conn.execute(
-        """
+            , (token_hash,)).fetchone()
+        if not session:
+            conn.close()
+            return None
+        user = conn.execute(
+            """
         SELECT *
         FROM users
         WHERE id = ?
           AND enabled = 1
         LIMIT 1
     """
-        , (session['user_id'],)).fetchone()
-    conn.close()
-    if not user:
-        return None
-    return safe_user_dict(user)
+            , (session['user_id'],)).fetchone()
+        conn.close()
+        if not user:
+            return None
+        return safe_user_dict(user)
+    finally:
+        conn.close()
 
 
 def revoke_current_session(request: Request):
@@ -3040,16 +3095,25 @@ def revoke_current_session(request: Request):
         return
     token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
     conn = db()
-    conn.execute(
-        """
+    try:
+        conn.execute(
+            """
         UPDATE auth_sessions
         SET revoked_at = CURRENT_TIMESTAMP
         WHERE token_hash = ?
           AND revoked_at IS NULL
     """
-        , (token_hash,))
-    conn.commit()
-    conn.close()
+            , (token_hash,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 
 
 def default_redirect_for_user(user):
@@ -3114,13 +3178,26 @@ def is_admin_path(path: str):
     authenticated administrator.
     """
     admin_prefixes = ('/admin', '/audit-log', '/alarms', '/alarm-settings',
-        '/users', '/user-access', '/client-access-manager',
+        '/alarm-settings-page', '/users', '/user-access',
+        '/client-access-manager',
         '/gateway-monitor', '/gateway-placement',
         '/gateway-placement-editor', '/floor-editor', '/floor-live-view',
         '/building-overview', '/device-capabilities-manager',
         '/sensor-profile-manager', '/sensor-profile-editor',
         '/sensor-profiles', '/sensor-catalog-manager', '/sensor-catalog',
-        '/firmware-module-manager', '/firmware-modules')
+        '/firmware-module-manager', '/firmware-modules',
+        # Asset hierarchy, inventory and telemetry. These were reachable
+        # anonymously: the whole building structure could be read, rewritten
+        # or deleted without a session. The device-facing endpoints
+        # (/provision, /ttn-webhook) are deliberately excluded -- they are
+        # matched earlier by public_prefixes because the LoRaWAN hardware and
+        # TTN call them without a browser session.
+        '/clients', '/sites', '/buildings', '/floors', '/rooms',
+        '/hierarchy', '/floorplans', '/floor-map-data',
+        '/devices', '/devices-status', '/device-status',
+        '/gateways',
+        '/floorplan-editor', '/node-placement-editor', '/site-map-editor',
+        '/api/analytics', '/api/devices', '/api/firmware')
     for prefix in admin_prefixes:
         if path == prefix or path.startswith(prefix + '/'):
             return True
@@ -3718,17 +3795,23 @@ def check_thresholds(node_type: str, data: dict, capabilities: (list[str] |
 
 
 def enrich_battery_telemetry(telemetry: dict):
-    from app.services.alarm_engine import enrich_battery_telemetry as svc_enrich_battery_telemetry
+    from app.services.alarm_engine import (
+        enrich_battery_telemetry as svc_enrich_battery_telemetry,
+    )
     return svc_enrich_battery_telemetry(telemetry)
 
 
 def check_battery_alarms(telemetry: dict):
-    from app.services.alarm_engine import check_battery_alarms as svc_check_battery_alarms
+    from app.services.alarm_engine import (
+        check_battery_alarms as svc_check_battery_alarms,
+    )
     return svc_check_battery_alarms(telemetry)
 
 
 def enrich_signal_telemetry(ttn_data: dict, telemetry: dict):
-    from app.services.alarm_engine import enrich_signal_telemetry as svc_enrich_signal_telemetry
+    from app.services.alarm_engine import (
+        enrich_signal_telemetry as svc_enrich_signal_telemetry,
+    )
     return svc_enrich_signal_telemetry(ttn_data, telemetry)
 
 
@@ -3988,7 +4071,7 @@ def get_device_scope_for_audit(conn, device_id):
             scope['room_id'] = row['room_id']
             scope['device_id'] = row['device_id']
     except Exception as e:
-        logger.error('Device audit scope lookup error:', e)
+        logger.error('Device audit scope lookup error: %s', e)
     return scope
 
 
@@ -4029,7 +4112,7 @@ def load_device_profile_for_live_telemetry(conn: sqlite3.Connection,
         return get_sensor_profile_detail(conn, profile_identifier,
             include_formatter=False)
     except Exception as exc:
-        logger.error('Live telemetry profile lookup failed:', exc)
+        logger.error('Live telemetry profile lookup failed: %s', exc)
         return None
 
 
@@ -4120,7 +4203,7 @@ def read_tb_latest_telemetry(device_id: str, profile: (dict | None)=None):
             profile = load_device_profile_for_live_telemetry(profile_conn,
                 clean_device_id)
         except Exception as exc:
-            logger.error('ThingsBoard profile lookup failed:', exc)
+            logger.error('ThingsBoard profile lookup failed: %s', exc)
             profile = None
         finally:
             if profile_conn is not None:
@@ -4138,14 +4221,14 @@ def read_tb_latest_telemetry(device_id: str, profile: (dict | None)=None):
     try:
         tb_id = tb_device['id']['id']
     except Exception:
-        logger.info('ThingsBoard device has no valid ID:', clean_device_id)
+        logger.info('ThingsBoard device has no valid ID: %s', clean_device_id)
         return telemetry
     try:
         response = tb_request('GET',
             f'/api/plugins/telemetry/DEVICE/{tb_id}/values/timeseries',
             params={'keys': ','.join(requested_keys)})
     except Exception as exc:
-        logger.error('ThingsBoard telemetry read failed:', exc)
+        logger.error('ThingsBoard telemetry read failed: %s', exc)
         return telemetry
     try:
         data = response.json()
@@ -4326,7 +4409,7 @@ def set_sensor_catalog_enabled_api(sensor_id: int, request: Request,
         raise
     except Exception as error:
         conn.rollback()
-        logger.error('Sensor catalog status error:', error)
+        logger.error('Sensor catalog status error: %s', error)
         raise HTTPException(status_code=500, detail=
             'Could not change sensor catalog status')
     finally:
@@ -4484,7 +4567,7 @@ def set_firmware_module_enabled_api(module_id: int, request: Request,
         raise
     except Exception as error:
         conn.rollback()
-        logger.error('Firmware module status error:', error)
+        logger.error('Firmware module status error: %s', error)
         raise HTTPException(status_code=500, detail=
             'Could not change firmware module status')
     finally:
@@ -4641,50 +4724,55 @@ def send_alarm_email(device_id: str, node_type: str, room: str, alarms:
         logger.info('Email sender config missing')
         return
     conn = db()
-    recipients = conn.execute(
-        """
+    try:
+        recipients = conn.execute(
+            """
         SELECT email
         FROM alarm_recipients
         WHERE enabled = 1
     """
-        ).fetchall()
-    template = conn.execute(
-        """
+            ).fetchall()
+        template = conn.execute(
+            """
         SELECT subject_template, body_template
         FROM alarm_email_template
         WHERE id = 1
     """
-        ).fetchone()
-    conn.close()
-    if not recipients:
-        logger.info('No enabled alarm recipients')
-        return
-    if not template:
-        logger.info('No email template found')
-        return
-    recipient_list = [r['email'] for r in recipients]
-    alarms_text = '\n'.join('- ' + a for a in alarms)
-    telemetry_text = json.dumps(telemetry, indent=2)
-    template_data = {'device_id': device_id, 'node_type': node_type, 'room':
-        room, 'alarms': alarms_text, 'telemetry': telemetry_text}
-    try:
-        subject = template['subject_template'].format(**template_data)
-        body = template['body_template'].format(**template_data)
-    except Exception as e:
-        logger.error('Template formatting error:', e)
-        return
-    msg = MIMEText(body)
-    msg['Subject'] = subject
-    msg['From'] = ALERT_EMAIL_FROM
-    msg['To'] = ', '.join(recipient_list)
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(ALERT_EMAIL_FROM, ALERT_EMAIL_PASSWORD)
-            server.sendmail(ALERT_EMAIL_FROM, recipient_list, msg.as_string())
-        logger.info('Alarm email sent successfully')
-    except Exception as e:
-        logger.error('Failed to send alarm email:', e)
+            ).fetchone()
+        conn.close()
+        if not recipients:
+            logger.info('No enabled alarm recipients')
+            return
+        if not template:
+            logger.info('No email template found')
+            return
+        recipient_list = [r['email'] for r in recipients]
+        alarms_text = '\n'.join('- ' + a for a in alarms)
+        telemetry_text = json.dumps(telemetry, indent=2)
+        template_data = {'device_id': device_id, 'node_type': node_type, 'room':
+            room, 'alarms': alarms_text, 'telemetry': telemetry_text}
+        try:
+            subject = template['subject_template'].format(**template_data)
+            body = template['body_template'].format(**template_data)
+        except Exception as e:
+            logger.error('Template formatting error: %s', e)
+            return
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = ALERT_EMAIL_FROM
+        msg['To'] = ', '.join(recipient_list)
+        try:
+            # Without an explicit timeout a hung SMTP host blocks this call
+            # indefinitely, which stalls the alarm path that calls it.
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+                server.starttls()
+                server.login(ALERT_EMAIL_FROM, ALERT_EMAIL_PASSWORD)
+                server.sendmail(ALERT_EMAIL_FROM, recipient_list, msg.as_string())
+            logger.info('Alarm email sent successfully')
+        except Exception as e:
+            logger.error('Failed to send alarm email: %s', e)
+    finally:
+        conn.close()
 
 
 def get_user_access_rows(conn, user_id: int):
@@ -4760,9 +4848,8 @@ def get_room_ids_for_floors(conn, floor_ids):
         SELECT id
         FROM rooms
         WHERE floor_id IN ({placeholders})
-           OR floorplan_id IN ({placeholders})
     """
-        , floor_ids + floor_ids).fetchall()
+        , floor_ids).fetchall()
     return [row['id'] for row in rows]
 
 
@@ -4780,18 +4867,8 @@ def get_floorplan_ids_for_floors_and_rooms(conn, floor_ids, room_ids):
             , floor_ids + floor_ids).fetchall()
         for row in rows:
             floorplan_ids.add(row['id'])
-    if room_ids:
-        placeholders = ','.join('?' for _ in room_ids)
-        rows = conn.execute(
-            f"""
-            SELECT floorplan_id
-            FROM rooms
-            WHERE id IN ({placeholders})
-        """
-            , room_ids).fetchall()
-        for row in rows:
-            if row['floorplan_id']:
-                floorplan_ids.add(row['floorplan_id'])
+    # Rooms are linked to floors, not directly to floorplans, so the floor
+    # lookup above already covers every floorplan reachable from these rooms.
     return list(floorplan_ids)
 
 
@@ -5376,8 +5453,7 @@ def parse_profile_alarm_timestamp(value):
     if not value:
         return None
     text = str(value).strip()
-    if text.endswith('Z'):
-        text = text[:-1]
+    text = text.removesuffix('Z')
     try:
         parsed = datetime.fromisoformat(text)
         if parsed.tzinfo is not None:
@@ -5610,11 +5686,10 @@ def process_profile_alarm_runtime(conn: sqlite3.Connection, device: dict,
             alarm_history_id = insert_profile_rule_alarm_history(conn=conn,
                 device=device, profile=profile, alarm=alarm, telemetry=
                 telemetry, triggered_at=now_text)
-            asyncio.create_task(manager.broadcast({'type': 'ALARM',
-                'device_name': device.get('name', 'Unknown Device'), 'rule':
-                alarm.get('rule_code', 'Unknown Rule'), 'telemetry':
-                telemetry}, client_id=device.get('client_id'), site_id=
-                device.get('site_id')))
+            schedule_broadcast({'type': 'ALARM', 'device_name': device.get(
+                'name', 'Unknown Device'), 'rule': alarm.get('rule_code',
+                'Unknown Rule'), 'telemetry': telemetry}, client_id=device.
+                get('client_id'), site_id=device.get('site_id'))
             conn.execute(
                 """
                 UPDATE
@@ -5750,7 +5825,11 @@ def get_active_profile_alarm_records(conn: sqlite3.Connection, device_id: str):
     return active_alarms
 
 
-async def process_ttn_webhook_background(data: dict):
+def process_ttn_webhook_background(data: dict):
+    # Deliberately synchronous. Starlette runs sync background tasks in a
+    # threadpool; as an `async def` this ran directly on the event loop while
+    # doing blocking sqlite, ThingsBoard HTTP and SMTP calls, so a single slow
+    # uplink stalled every other request and the alarm websocket.
     """
     Background worker for processing TTN uplinks.
     """
@@ -5779,7 +5858,7 @@ async def process_ttn_webhook_background(data: dict):
         validation = validate_decoded_payload_against_profile(profile,
             decoded_payload)
         if not validation['valid']:
-            logger.info('Profile telemetry validation rejected:', validation[
+            logger.info('Profile telemetry validation rejected: %s', validation[
                 'errors'])
             return {'status': 'rejected_invalid_profile_payload',
                 'device_id': device_id, 'profile_code': validation[
@@ -5895,7 +5974,7 @@ async def process_ttn_webhook_background(data: dict):
             thingsboard_sent = True
         except Exception as exc:
             thingsboard_error = str(exc)
-            logger.error('Profile-driven ThingsBoard forwarding failed:', exc)
+            logger.error('Profile-driven ThingsBoard forwarding failed: %s', exc)
         email_alarms = []
         for message in (newly_triggered_profile_messages + system_alarms):
             if message and message not in email_alarms:
@@ -5912,12 +5991,12 @@ async def process_ttn_webhook_background(data: dict):
             thingsboard_attribute_status, 'thingsboard_error':
             thingsboard_error}
     except HTTPException as exc:
-        logger.error('TTN webhook profile context rejected:', exc.detail)
+        logger.error('TTN webhook profile context rejected: %s', exc.detail)
         return {'status': 'rejected_profile_context', 'device_id': 
             device_id or None, 'http_status': exc.status_code, 'detail':
             exc.detail, 'telemetry_stored': False, 'thingsboard_sent': False}
     except Exception as exc:
-        logger.error('TTN webhook error:', exc)
+        logger.error('TTN webhook error: %s', exc)
         return {'status': 'error', 'device_id': device_id or None,
             'message': str(exc), 'telemetry_stored': False,
             'thingsboard_sent': False}
@@ -5926,23 +6005,24 @@ async def process_ttn_webhook_background(data: dict):
             conn.close()
 
 
-from app.routers.pages import router as pages_router
-from app.routers.auth import router as auth_router
-from app.routers.clients import router as clients_router
-from app.routers.hierarchy import router as hierarchy_router
-from app.routers.devices import router as devices_router
-from app.routers.gateways import router as gateways_router
-from app.routers.profiles import router as profiles_router
-from app.routers.firmware import router as firmware_router
-from app.routers.integrations import router as integrations_router
-from app.routers.telemetry import router as telemetry_router
-from app.routers.alarms import router as alarms_router
-from app.routers.client_portal import router as client_portal_router
 from app.routers.admin import router as admin_router
+from app.routers.alarms import router as alarms_router
 from app.routers.audit import router as audit_router
+from app.routers.auth import router as auth_router
+from app.routers.client_portal import router as client_portal_router
+from app.routers.clients import router as clients_router
+from app.routers.devices import router as devices_router
+from app.routers.firmware import router as firmware_router
+from app.routers.gateways import router as gateways_router
+from app.routers.hierarchy import router as hierarchy_router
+from app.routers.integrations import router as integrations_router
+from app.routers.pages import router as pages_router
+from app.routers.profiles import router as profiles_router
 from app.routers.root import router as root_router
+from app.routers.telemetry import router as telemetry_router
 from app.routers.webhooks import router as webhooks_router
 from app.routers.ws import router as ws_router
+
 app.include_router(auth_router)
 app.include_router(clients_router)
 app.include_router(hierarchy_router)
@@ -5962,7 +6042,7 @@ app.include_router(webhooks_router)
 app.include_router(ws_router)
 
 
-async def check_offline_devices(conn: sqlite3.Connection, now: datetime | None = None):
+def check_offline_devices(conn: sqlite3.Connection, now: datetime | None = None):
     if now is None:
         now = datetime.now(timezone.utc)
     cursor = conn.cursor()
@@ -6023,23 +6103,36 @@ async def check_offline_devices(conn: sqlite3.Connection, now: datetime | None =
                     "message": "Device Offline (No data in 24h)",
                     "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
                 }
-                asyncio.create_task(
-                    manager.broadcast(
-                        alert_msg, client_id=row["client_id"], site_id=row["site_id"]
-                    )
+                schedule_broadcast(
+                    alert_msg, client_id=row["client_id"], site_id=row["site_id"]
                 )
     conn.commit()
+
+
+def run_offline_scan():
+    """
+    One watchdog pass, executed entirely on a worker thread.
+
+    The connection is opened here rather than by the caller because sqlite3
+    connections are bound to the thread that created them.
+    """
+    from app.db.connection import get_db_connection
+    conn = get_db_connection()
+    try:
+        check_offline_devices(conn)
+    finally:
+        # Previously outside a finally, so every failed scan leaked a
+        # connection -- once every 300s, for the life of the process.
+        conn.close()
 
 
 async def offline_watchdog():
     while True:
         try:
-            from app.db.connection import get_db_connection
-            conn = get_db_connection()
-            await check_offline_devices(conn)
-            conn.close()
+            # Off the event loop: the scan is blocking sqlite work.
+            await asyncio.to_thread(run_offline_scan)
         except Exception as e:
-            logger.error(f"Watchdog error: {e}")
+            logger.error("Watchdog error: %s", e)
         await asyncio.sleep(300)
 
 
