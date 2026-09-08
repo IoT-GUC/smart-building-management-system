@@ -393,6 +393,7 @@ def create_device(data: dict):
     building_id = data.get("building_id")
     floor_id = data.get("floor_id")
     room_id = data.get("room_id")
+    site_id = data.get("site_id")
     label = str(data.get("label") or "").strip() or device_id
     node_type = str(data.get("node_type") or "environment").strip()
     chip_mac = str(data.get("chip_mac") or "").strip() or None
@@ -403,8 +404,8 @@ def create_device(data: dict):
     if not device_id:
         raise HTTPException(status_code=400, detail="device_id is required")
 
-    if not building_id and not room_id and not floor_id:
-        raise HTTPException(status_code=400, detail="building_id, floor_id, or room_id is required")
+    if not building_id and not room_id and not floor_id and not site_id:
+        raise HTTPException(status_code=400, detail="building_id, floor_id, room_id, or site_id is required")
 
     conn = db()
     try:
@@ -412,7 +413,6 @@ def create_device(data: dict):
         if existing:
             raise HTTPException(status_code=400, detail=f"Device '{device_id}' already exists")
 
-        site_id = None
         client_id = None
 
         if room_id:
@@ -459,6 +459,18 @@ def create_device(data: dict):
                 client_id = bldg_row["client_id"]
             else:
                 raise HTTPException(status_code=404, detail=f"Building with ID {building_id} not found")
+        elif site_id:
+            site_row = conn.execute("""
+                SELECT s.id as site_id, c.id as client_id
+                FROM sites s
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE s.id = ?
+            """, (site_id,)).fetchone()
+            if site_row:
+                site_id = site_row["site_id"]
+                client_id = site_row["client_id"]
+            else:
+                raise HTTPException(status_code=404, detail=f"Site with ID {site_id} not found")
 
         conn.execute("""
             INSERT INTO devices (

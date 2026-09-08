@@ -430,14 +430,17 @@ hr{
 
         <label>Node Type</label>
         <select id="modalNodeType">
+            <option value="gateway">Gateway (LoRaWAN / Edge Base Station)</option>
             <option value="environment">Environment (Temp/Humid/CO2/IAQ)</option>
             <option value="energy">Energy (Power/Current/Voltage)</option>
             <option value="safety">Safety (Smoke/Gas/Water Leak)</option>
             <option value="occupancy">Occupancy (Motion/Presence/PIR)</option>
+            <option value="actuator">Actuator (Relay/HVAC Control)</option>
+            <option value="hybrid">Hybrid Node</option>
             <option value="multi">Multi-Sensor Node</option>
         </select>
 
-        <label>Target Building *</label>
+        <label>Target Building (Optional for Site Photo)</label>
         <select id="modalBuildingSelect"></select>
 
         <div class="modalActions">
@@ -676,10 +679,14 @@ async function openAddDeviceModal() {
         const res = await fetch("/buildings");
         allBuildings = await res.json();
 
-        bldSelect.innerHTML = `<option value="">Select building</option>`;
+        bldSelect.innerHTML = `<option value="">Select building (Optional)</option>`;
         allBuildings.forEach(b => {
             bldSelect.innerHTML += `<option value="${b.id}">${b.name}</option>`;
         });
+
+        if (floorData?.building?.id) {
+            bldSelect.value = floorData.building.id;
+        }
     } catch (e) {
         console.error("Could not load buildings for modal", e);
     }
@@ -695,12 +702,37 @@ async function submitModalAddDevice() {
     const device_id = document.getElementById("modalDeviceId").value.trim();
     const label = document.getElementById("modalDeviceLabel").value.trim();
     const node_type = document.getElementById("modalNodeType").value;
-    const building_id = Number(document.getElementById("modalBuildingSelect").value);
+    const bldVal = document.getElementById("modalBuildingSelect").value;
+    const building_id = bldVal ? Number(bldVal) : null;
     const status = document.getElementById("modalStatus");
 
-    if (!device_id || !building_id) {
+    if (!device_id) {
         status.style.color = "#fecaca";
-        status.innerText = "Device ID and Target Building are required.";
+        status.innerText = "Device ID is required.";
+        return;
+    }
+
+    const payload = {
+        device_id: device_id,
+        label: label || device_id,
+        node_type: node_type
+    };
+
+    if (building_id) {
+        payload.building_id = building_id;
+    }
+
+    if (currentViewMode === "site") {
+        const siteId = document.getElementById("siteId").value;
+        if (siteId) payload.site_id = Number(siteId);
+    } else {
+        const floorId = document.getElementById("floorId").value;
+        if (floorId) payload.floor_id = Number(floorId);
+    }
+
+    if (!payload.building_id && !payload.floor_id && !payload.site_id) {
+        status.style.color = "#fecaca";
+        status.innerText = "Please select a Target Building or ensure a Site/Floor is active.";
         return;
     }
 
@@ -711,7 +743,7 @@ async function submitModalAddDevice() {
         const res = await fetch("/devices", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({device_id, label, node_type, building_id})
+            body: JSON.stringify(payload)
         });
 
         const data = await res.json();
