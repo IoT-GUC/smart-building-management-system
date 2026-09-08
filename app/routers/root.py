@@ -1,17 +1,34 @@
 import os
 
-from fastapi import APIRouter
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import FileResponse, RedirectResponse
 
 router = APIRouter()
 
 
 @router.get("/")
-def root():
-    return {
-        "status": "ok",
-        "service": "Smart Building Management Server",
-    }
+def root(request: Request):
+    # If an API client specifically requests JSON (and not HTML browser traffic)
+    accept = request.headers.get("accept", "")
+    if "application/json" in accept and "text/html" not in accept:
+        return {
+            "status": "ok",
+            "service": "Smart Building Management Server",
+        }
+
+    # Browser navigation: redirect authenticated users to dashboard or guests to login
+    try:
+        from app.main import get_current_user_from_request
+        user = get_current_user_from_request(request)
+        if user:
+            role = (user.get("role") or "").lower()
+            if role == "client":
+                return RedirectResponse(url=f"/client-portal?user_id={user['id']}", status_code=302)
+            return RedirectResponse(url="/admin/home", status_code=302)
+    except Exception:
+        pass
+
+    return RedirectResponse(url="/login", status_code=302)
 
 
 @router.get("/service-worker.js", include_in_schema=False)
