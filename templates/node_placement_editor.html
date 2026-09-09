@@ -267,6 +267,74 @@ option {
 hr{
     border:none;
     border-top:1px solid #334155;
+    margin: 16px 0;
+}
+
+.discoveredInboxSection {
+    background: #0f172a;
+    border: 1px solid #0284c7;
+    border-radius: 12px;
+    padding: 12px;
+    margin-top: 14px;
+    margin-bottom: 14px;
+}
+
+.inboxHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+}
+
+.unplacedBadge {
+    background: #64748b;
+    color: white;
+    font-size: 11px;
+    font-weight: bold;
+    padding: 2px 7px;
+    border-radius: 999px;
+}
+
+.unplacedList {
+    margin-top: 10px;
+    max-height: 220px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.unplacedItem {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 8px 10px;
+    cursor: default;
+    transition: border-color 0.2s;
+}
+
+.unplacedItem:hover {
+    border-color: #38bdf8;
+}
+
+.placeNowBtn {
+    margin-top: 8px;
+    padding: 6px 10px !important;
+    font-size: 12px !important;
+    background: #0284c7 !important;
+    color: white !important;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+    width: 100%;
+}
+
+.placeNowBtn:hover {
+    background: #0369a1 !important;
+}
+
 .addDeviceBtn{
     background:#16a34a !important;
     color:white !important;
@@ -393,7 +461,24 @@ hr{
             <button class="addDeviceBtn" style="padding:6px 10px; font-size:12px;" onclick="openAddDeviceModal()">+ Add Device</button>
         </div>
 
-        <h3>Devices</h3>
+        <!-- Discovered / Unplaced Devices Inbox -->
+        <div class="discoveredInboxSection" id="discoveredInboxSection">
+            <div class="inboxHeader" onclick="toggleDiscoveredDrawer()">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span style="font-size:16px;">📥</span>
+                    <span style="font-weight:bold; color:#38bdf8; font-size:14px;">Discovered Devices</span>
+                    <span id="unplacedBadge" class="unplacedBadge">0</span>
+                </div>
+                <span id="drawerToggleIcon" style="color:#94a3b8; font-size:11px;">▼</span>
+            </div>
+            <div id="unplacedList" class="unplacedList">
+                <div style="color:#64748b; font-size:12px; font-style:italic; padding:6px 0;">No unplaced devices waiting. Any new LoRa node will appear here automatically!</div>
+            </div>
+        </div>
+
+        <hr>
+
+        <h3>Placed Devices</h3>
         <div id="deviceList"></div>
 
         <hr>
@@ -465,6 +550,133 @@ let selectedDevice = null;
 let selectedNodeEl = null;
 let dragging = false;
 let dragDevice = null;
+let unplacedDevices = [];
+let discoveredDrawerOpen = true;
+
+function toggleDiscoveredDrawer() {
+    discoveredDrawerOpen = !discoveredDrawerOpen;
+    const listEl = document.getElementById("unplacedList");
+    const iconEl = document.getElementById("drawerToggleIcon");
+    if (listEl) listEl.style.display = discoveredDrawerOpen ? "flex" : "none";
+    if (iconEl) iconEl.innerText = discoveredDrawerOpen ? "▼" : "▶";
+}
+
+async function loadUnplacedDevices() {
+    try {
+        const res = await fetch("/devices/unplaced");
+        if (!res.ok) return;
+        unplacedDevices = await res.json();
+        renderUnplacedDevices();
+    } catch (e) {
+        console.error("Could not load unplaced devices:", e);
+    }
+}
+
+function renderUnplacedDevices() {
+    const listEl = document.getElementById("unplacedList");
+    const badgeEl = document.getElementById("unplacedBadge");
+    if (!listEl || !badgeEl) return;
+
+    badgeEl.innerText = unplacedDevices.length;
+    if (unplacedDevices.length > 0) {
+        badgeEl.style.background = "#16a34a";
+    } else {
+        badgeEl.style.background = "#64748b";
+    }
+
+    if (unplacedDevices.length === 0) {
+        listEl.innerHTML = `<div style="color:#64748b; font-size:12px; font-style:italic; padding:6px 0;">No unplaced devices waiting. Any new LoRa node will appear here automatically!</div>`;
+        return;
+    }
+
+    listEl.innerHTML = "";
+    unplacedDevices.forEach(dev => {
+        const item = document.createElement("div");
+        item.className = "unplacedItem";
+
+        let teleText = "";
+        if (dev.telemetry && Object.keys(dev.telemetry).length > 0) {
+            const t = dev.telemetry;
+            const parts = [];
+            if (t.temperature !== undefined) parts.push(`🌡 ${t.temperature}°C`);
+            if (t.humidity !== undefined) parts.push(`💧 ${t.humidity}%`);
+            if (t.battery_voltage !== undefined) parts.push(`🔋 ${t.battery_voltage}V`);
+            if (t.battery !== undefined) parts.push(`🔋 ${t.battery}%`);
+            if (t.voltage !== undefined) parts.push(`⚡ ${t.voltage}V`);
+            if (t.motion !== undefined) parts.push(t.motion ? "🚶 Motion" : "Clear");
+            if (t.alarm !== undefined) parts.push(t.alarm ? "🚨 Alarm" : "OK");
+            if (parts.length > 0) teleText = parts.join(" | ");
+        }
+        if (!teleText) teleText = "Live on LoRaWAN";
+
+        item.innerHTML = `
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:bold; color:#f8fafc; font-size:13px;">${iconFor(dev.node_type)} ${dev.label || dev.device_id}</span>
+                <span style="font-size:10px; background:#16a34a; color:white; padding:2px 6px; border-radius:4px;">🟢 Discovered</span>
+            </div>
+            <div style="font-size:11px; color:#94a3b8; margin-top:3px;">
+                ${dev.dev_eui ? 'DevEUI: ' + dev.dev_eui : dev.device_id}
+            </div>
+            <div style="font-size:11px; color:#38bdf8; margin-top:3px; font-weight:bold;">
+                ${teleText}
+            </div>
+            <button class="placeNowBtn" onclick="placeUnplacedDevice('${dev.device_id}')">
+                📍 Place on This Map
+            </button>
+        `;
+        listEl.appendChild(item);
+    });
+}
+
+function placeUnplacedDevice(deviceId) {
+    const dev = unplacedDevices.find(d => d.device_id === deviceId);
+    if (!dev) return;
+
+    if (!image.clientWidth || !image.clientHeight) {
+        alert("Please wait for the map image to load first.");
+        return;
+    }
+
+    const centerDisplayX = Math.round(image.clientWidth / 2);
+    const centerDisplayY = Math.round(image.clientHeight / 2);
+    const origPos = displayToOriginal(centerDisplayX, centerDisplayY);
+
+    dev.x = origPos.x;
+    dev.y = origPos.y;
+
+    let existingNode = document.getElementById("node_" + dev.device_id);
+    if (!existingNode) {
+        existingNode = document.createElement("div");
+        existingNode.id = "node_" + dev.device_id;
+        existingNode.className = "node";
+        nodesLayer.appendChild(existingNode);
+    }
+
+    existingNode.style.left = centerDisplayX + "px";
+    existingNode.style.top = centerDisplayY + "px";
+    existingNode.innerText = iconFor(dev.node_type) + " " + (dev.label || dev.device_id);
+
+    existingNode.onmousedown = function(e) {
+        e.preventDefault();
+        selectDevice(dev, existingNode);
+        dragging = true;
+        dragDevice = dev;
+        existingNode.style.cursor = "grabbing";
+    };
+
+    existingNode.onclick = function(e) {
+        e.stopPropagation();
+        selectDevice(dev, existingNode);
+    };
+
+    selectDevice(dev, existingNode);
+
+    const hintEl = document.getElementById("modeHint");
+    if (hintEl) {
+        hintEl.innerText = `Placed ${dev.label || dev.device_id} in center. Drag it to its exact spot, then click "Save Current Position".`;
+        hintEl.style.color = "#38bdf8";
+    }
+}
 
 const image = document.getElementById("floorImage");
 const overlay = document.getElementById("overlay");
@@ -1010,18 +1222,27 @@ async function savePosition(){
         return;
     }
 
-    const roomId = currentViewMode === "floor" ? document.getElementById("roomSelect").value : null;
+    const payload = {
+        x: selectedDevice.x,
+        y: selectedDevice.y
+    };
+
+    if (currentViewMode === "floor") {
+        const floorId = document.getElementById("floorId")?.value;
+        if (floorId) payload.floor_id = Number(floorId);
+        const roomId = document.getElementById("roomSelect")?.value;
+        if (roomId) payload.room_id = Number(roomId);
+    } else {
+        const siteId = document.getElementById("siteId")?.value;
+        if (siteId) payload.site_id = Number(siteId);
+    }
 
     const res = await fetch(`/devices/${selectedDevice.device_id}/position`, {
         method:"PUT",
         headers:{
             "Content-Type":"application/json"
         },
-        body:JSON.stringify({
-            x:selectedDevice.x,
-            y:selectedDevice.y,
-            room_id: roomId ? Number(roomId) : null
-        })
+        body:JSON.stringify(payload)
     });
 
     const data = await res.json();
@@ -1031,7 +1252,9 @@ async function savePosition(){
         return;
     }
 
-    alert("Device position saved");
+    alert("Device position saved!");
+
+    await loadUnplacedDevices();
 
     if (currentViewMode === "site") {
         await loadSiteMap();
@@ -1069,7 +1292,12 @@ async function resetToRoomCenter(){
     await assignToRoom();
 }
 
-window.onload = loadFloor;
+window.onload = function() {
+    loadFloor();
+    loadUnplacedDevices();
+    setInterval(loadUnplacedDevices, 8000);
+};
+
 async function loadFloorDropdown() {
     const select = document.getElementById("floorId");
 
@@ -1110,7 +1338,10 @@ async function loadFloorDropdown() {
     }
 }
 
-document.addEventListener("DOMContentLoaded", loadFloorDropdown);
+document.addEventListener("DOMContentLoaded", function() {
+    loadFloorDropdown();
+    loadUnplacedDevices();
+});
 </script>
 
 <script src="/static/help_system.js"></script>

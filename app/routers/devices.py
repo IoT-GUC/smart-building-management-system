@@ -387,6 +387,43 @@ def devices_status():
 
     finally:
         conn.close()
+
+
+@router.get("/devices/unplaced")
+def get_unplaced_devices():
+    """
+    Return all discovered or unplaced devices that are not yet positioned on a map.
+    Includes latest telemetry and connection status.
+    """
+    conn = db()
+    try:
+        rows = conn.execute("""
+            SELECT 
+                d.*,
+                lt.telemetry as latest_telemetry_json,
+                lt.alarm_active,
+                lt.alarm_message,
+                lt.updated_at as telemetry_updated_at
+            FROM devices d
+            LEFT JOIN device_latest_telemetry lt ON d.device_id = lt.device_id
+            WHERE d.x IS NULL OR d.y IS NULL OR d.is_placed = 0
+            ORDER BY COALESCE(d.last_seen, d.created_at) DESC
+        """).fetchall()
+
+        result = []
+        for row in rows:
+            dev = dict(row)
+            raw_telemetry = dev.pop("latest_telemetry_json", None)
+            try:
+                dev["telemetry"] = json.loads(raw_telemetry) if raw_telemetry else {}
+            except Exception:
+                dev["telemetry"] = {}
+            result.append(dev)
+        return result
+    finally:
+        conn.close()
+
+
 @router.post("/devices")
 def create_device(data: dict):
     device_id = str(data.get("device_id") or "").strip()
@@ -854,6 +891,9 @@ def update_device_position(
     x = data.get("x")
     y = data.get("y")
     room_id = data.get("room_id")
+    floor_id = data.get("floor_id")
+    building_id = data.get("building_id")
+    site_id = data.get("site_id")
 
     if x is None or y is None:
         raise HTTPException(
@@ -880,14 +920,18 @@ def update_device_position(
         old_device = dict(device)
 
         if room_id is not None:
-            room = conn.execute("""
-            SELECT *
-            FROM rooms
-            WHERE id = ?
-            LIMIT 1
-        """, (room_id,)).fetchone()
+            room_row = conn.execute("""
+                SELECT r.id as room_id, f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                FROM rooms r
+                JOIN floors f ON r.floor_id = f.id
+                JOIN buildings b ON f.building_id = b.id
+                LEFT JOIN sites s ON b.site_id = s.id
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE r.id = ?
+                LIMIT 1
+            """, (room_id,)).fetchone()
 
-            if not room:
+            if not room_row:
                 conn.close()
                 raise HTTPException(
                     status_code=404,
@@ -895,27 +939,109 @@ def update_device_position(
                 )
 
             conn.execute("""
-            UPDATE devices
-            SET
-                x = ?,
-                y = ?,
-                room_id = ?
-            WHERE device_id = ?
-        """, (
+                UPDATE devices
+                SET
+                    x = ?,
+                    y = ?,
+                    room_id = ?,
+                    floor_id = ?,
+                    building_id = ?,
+                    site_id = ?,
+                    client_id = ?,
+                    is_placed = 1
+                WHERE device_id = ?
+            """, (
                 x,
                 y,
-                room_id,
+                room_row["room_id"],
+                room_row["floor_id"],
+                room_row["building_id"],
+                room_row["site_id"],
+                room_row["client_id"],
                 device_id
             ))
 
+        elif floor_id is not None:
+            floor_row = conn.execute("""
+                SELECT f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                FROM floors f
+                JOIN buildings b ON f.building_id = b.id
+                LEFT JOIN sites s ON b.site_id = s.id
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE f.id = ?
+                LIMIT 1
+            """, (floor_id,)).fetchone()
+
+            if floor_row:
+                conn.execute("""
+                    UPDATE devices
+                    SET
+                        x = ?,
+                        y = ?,
+                        floor_id = ?,
+                        building_id = ?,
+                        site_id = ?,
+                        client_id = ?,
+                        is_placed = 1
+                    WHERE device_id = ?
+                """, (
+                    x,
+                    y,
+                    floor_row["floor_id"],
+                    floor_row["building_id"],
+                    floor_row["site_id"],
+                    floor_row["client_id"],
+                    device_id
+                ))
+            else:
+                conn.execute("""
+                    UPDATE devices
+                    SET x = ?, y = ?, is_placed = 1
+                    WHERE device_id = ?
+                """, (x, y, device_id))
+
+        elif site_id is not None:
+            site_row = conn.execute("""
+                SELECT s.id as site_id, c.id as client_id
+                FROM sites s
+                LEFT JOIN clients c ON s.client_id = c.id
+                WHERE s.id = ?
+                LIMIT 1
+            """, (site_id,)).fetchone()
+
+            if site_row:
+                conn.execute("""
+                    UPDATE devices
+                    SET
+                        x = ?,
+                        y = ?,
+                        site_id = ?,
+                        client_id = ?,
+                        is_placed = 1
+                    WHERE device_id = ?
+                """, (
+                    x,
+                    y,
+                    site_row["site_id"],
+                    site_row["client_id"],
+                    device_id
+                ))
+            else:
+                conn.execute("""
+                    UPDATE devices
+                    SET x = ?, y = ?, is_placed = 1
+                    WHERE device_id = ?
+                """, (x, y, device_id))
+
         else:
             conn.execute("""
-            UPDATE devices
-            SET
-                x = ?,
-                y = ?
-            WHERE device_id = ?
-        """, (
+                UPDATE devices
+                SET
+                    x = ?,
+                    y = ?,
+                    is_placed = 1
+                WHERE device_id = ?
+            """, (
                 x,
                 y,
                 device_id

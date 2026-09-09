@@ -5013,11 +5013,100 @@ PROFILE_SYSTEM_TELEMETRY_FIELDS = {'battery_percent', 'battery_voltage',
     'power_source', 'firmware_version', 'payload_version'}
 
 
+def auto_provision_discovered_device(conn: sqlite3.Connection, device_id: str, raw_envelope: dict | None = None) -> dict:
+    """
+    Zero-touch auto-provisioning for newly detected LoRaWAN devices.
+    Assigns the universal Cayenne LPP profile (or default active profile),
+    marks status as online and is_placed as 0 (unplaced).
+    """
+    clean_device_id = str(device_id or '').strip()
+    dev_eui = None
+    join_eui = None
+    if raw_envelope and isinstance(raw_envelope, dict):
+        end_device_ids = raw_envelope.get('end_device_ids') or {}
+        dev_eui = str(end_device_ids.get('dev_eui') or '').strip() or None
+        join_eui = str(end_device_ids.get('join_eui') or '').strip() or None
+
+    # Find the best profile: prefer CAYENNE_LPP_V1, then MULTI_LEGACY_V1, then any active
+    profile_row = conn.execute(
+        "SELECT * FROM sensor_profiles WHERE profile_code = 'CAYENNE_LPP_V1' AND enabled = 1"
+    ).fetchone()
+    if not profile_row:
+        profile_row = conn.execute(
+            "SELECT * FROM sensor_profiles WHERE profile_code = 'MULTI_LEGACY_V1' AND enabled = 1"
+        ).fetchone()
+    if not profile_row:
+        profile_row = conn.execute(
+            "SELECT * FROM sensor_profiles WHERE enabled = 1 ORDER BY id LIMIT 1"
+        ).fetchone()
+
+    profile_id = profile_row['id'] if profile_row else None
+    profile_code = profile_row['profile_code'] if profile_row else 'CAYENNE_LPP_V1'
+    profile_version = int(profile_row['profile_version']) if profile_row else 1
+    payload_version = int(profile_row['payload_version']) if profile_row else 1
+    node_type = str(profile_row['node_type']) if profile_row else 'multi'
+    schema_checksum = str(profile_row['schema_checksum'] or '') if profile_row else ''
+
+    friendly_label = f"Discovered {clean_device_id}"
+
+    conn.execute(
+        """
+        INSERT INTO devices (
+            device_id,
+            dev_eui,
+            join_eui,
+            label,
+            node_type,
+            status,
+            profile_id,
+            profile_code,
+            profile_version,
+            payload_version,
+            configuration_checksum,
+            configuration_status,
+            is_placed,
+            last_seen,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, 'valid', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,
+        (
+            clean_device_id,
+            dev_eui,
+            join_eui,
+            friendly_label,
+            node_type,
+            profile_id,
+            profile_code,
+            profile_version,
+            payload_version,
+            schema_checksum,
+        ),
+    )
+    conn.commit()
+
+    try:
+        log_audit_event(
+            conn,
+            action="device_auto_discovered",
+            target_type="device",
+            target_id=clean_device_id,
+            message=f"Zero-touch auto-discovered LoRaWAN device {clean_device_id} via TTN uplink",
+        )
+    except Exception as audit_err:
+        logger.warning("Could not log audit event for auto-discovery: %s", audit_err)
+
+    created_row = conn.execute(
+        "SELECT * FROM devices WHERE device_id = ? LIMIT 1", (clean_device_id,)
+    ).fetchone()
+    return dict(created_row) if created_row else {}
+
+
 def load_device_profile_context_for_webhook(conn: sqlite3.Connection,
-    device_id: str):
+    device_id: str, raw_envelope: dict | None = None, auto_provision: bool = True):
     """
     Load and verify the sensor profile assigned to the device
-    that produced a TTN uplink.
+    that produced a TTN uplink. If unknown, auto-provisions the device.
     """
     clean_device_id = str(device_id or '').strip()
     if not clean_device_id:
@@ -5032,16 +5121,41 @@ def load_device_profile_context_for_webhook(conn: sqlite3.Connection,
         """
         , (clean_device_id,)).fetchone()
     if not device_row:
-        raise HTTPException(status_code=404, detail={'message':
-            'TTN webhook device was not found in the backend database',
-            'device_id': clean_device_id})
-    device = dict(device_row)
+        if auto_provision:
+            device = auto_provision_discovered_device(conn, clean_device_id, raw_envelope)
+        else:
+            raise HTTPException(status_code=404, detail={'message':
+                'TTN webhook device was not found in the backend database',
+                'device_id': clean_device_id})
+    else:
+        device = dict(device_row)
+        try:
+            conn.execute("UPDATE devices SET status = 'online', last_seen = CURRENT_TIMESTAMP WHERE device_id = ?", (clean_device_id,))
+            conn.commit()
+        except Exception:
+            pass
+
     profile_identifier = device.get('profile_id') or device.get('profile_code')
     if not profile_identifier:
-        raise HTTPException(status_code=409, detail={'message':
-            'Device has no assigned sensor profile', 'device_id':
-            clean_device_id, 'action':
-            'Reprovision the device using a sensor profile'})
+        # Fallback to CAYENNE_LPP_V1 or default active profile
+        fallback_profile = conn.execute(
+            "SELECT id, profile_code FROM sensor_profiles WHERE profile_code = 'CAYENNE_LPP_V1' OR enabled = 1 ORDER BY id LIMIT 1"
+        ).fetchone()
+        if fallback_profile:
+            conn.execute(
+                "UPDATE devices SET profile_id = ?, profile_code = ? WHERE device_id = ?",
+                (fallback_profile['id'], fallback_profile['profile_code'], clean_device_id)
+            )
+            conn.commit()
+            profile_identifier = fallback_profile['id']
+            device['profile_id'] = fallback_profile['id']
+            device['profile_code'] = fallback_profile['profile_code']
+        else:
+            raise HTTPException(status_code=409, detail={'message':
+                'Device has no assigned sensor profile', 'device_id':
+                clean_device_id, 'action':
+                'Reprovision the device using a sensor profile'})
+
     profile = get_sensor_profile_detail(conn, profile_identifier,
         include_formatter=False)
     if not profile:
@@ -5172,13 +5286,37 @@ def convert_profile_telemetry_value(field: dict, value):
     return converted
 
 
+CAYENNE_CHANNEL_PREFIX_MAP = {
+    'temperature': 'temperature',
+    'relative_humidity': 'humidity',
+    'humidity': 'humidity',
+    'presence': 'motion',
+    'motion': 'motion',
+    'alarm': 'alarm',
+    'digital_in': 'digital_in',
+    'digital_out': 'digital_out',
+    'analog_in': 'analog_in',
+    'analog_out': 'analog_out',
+    'voltage': 'voltage',
+    'current': 'current',
+    'power': 'power',
+    'luminosity': 'lux',
+    'lux': 'lux',
+    'barometric_pressure': 'pressure',
+    'pressure': 'pressure',
+    'co2': 'co2',
+    'concentration': 'co2',
+    'battery': 'battery',
+}
+
+
 def validate_decoded_payload_against_profile(profile: dict, decoded_payload):
     """
     Validate TTN decoded_payload against the telemetry fields defined
     by the assigned sensor profile.
 
     Unexpected sensor fields are excluded and reported as warnings.
-    Approved system fields are preserved.
+    Approved system fields and Cayenne LPP channels are preserved.
     """
     errors = []
     warnings = []
@@ -5199,6 +5337,18 @@ def validate_decoded_payload_against_profile(profile: dict, decoded_payload):
         field for field in fields if str(field.get('field_key') or '').strip()}
     normalized_payload = {str(key).strip().lower(): value for key, value in
         decoded_payload.items()}
+
+    # Recognize Cayenne LPP dynamic channels (e.g. temperature_1 -> temperature)
+    cayenne_channel_fields = {}
+    for raw_key, raw_val in list(normalized_payload.items()):
+        m = re.match(r'^([a-zA-Z_]+)_(\d+)$', raw_key)
+        if m:
+            prefix = m.group(1).lower()
+            std_key = CAYENNE_CHANNEL_PREFIX_MAP.get(prefix, prefix)
+            cayenne_channel_fields[raw_key] = raw_val
+            if std_key not in normalized_payload:
+                normalized_payload[std_key] = raw_val
+
     for field_key, field in fields_by_key.items():
         required = bool(field.get('required'))
         if field_key not in normalized_payload:
@@ -5212,6 +5362,7 @@ def validate_decoded_payload_against_profile(profile: dict, decoded_payload):
                 normalized_payload[field_key])
         except ValueError as exc:
             errors.append(str(exc))
+
     for system_key in PROFILE_SYSTEM_TELEMETRY_FIELDS:
         if system_key in normalized_payload:
             system_value = normalized_payload[system_key]
@@ -5219,7 +5370,19 @@ def validate_decoded_payload_against_profile(profile: dict, decoded_payload):
                 warnings.append(f'Ignored invalid system field: {system_key}')
                 continue
             telemetry[system_key] = system_value
-    allowed_keys = set(fields_by_key.keys()) | PROFILE_SYSTEM_TELEMETRY_FIELDS
+
+    # Preserve all decoded Cayenne LPP channels directly into telemetry
+    for ch_key, ch_val in cayenne_channel_fields.items():
+        if isinstance(ch_val, (int, float, bool, str)):
+            telemetry[ch_key] = ch_val
+
+    # For universal Cayenne LPP profile, include any other valid numeric/bool fields
+    if profile_code == 'CAYENNE_LPP_V1':
+        for k, v in normalized_payload.items():
+            if k not in telemetry and isinstance(v, (int, float, bool, str)):
+                telemetry[k] = v
+
+    allowed_keys = set(fields_by_key.keys()) | PROFILE_SYSTEM_TELEMETRY_FIELDS | set(cayenne_channel_fields.keys()) | set(telemetry.keys())
     for payload_key in normalized_payload:
         if payload_key not in allowed_keys:
             unknown_fields.append(payload_key)
@@ -5849,7 +6012,7 @@ def process_ttn_webhook_background(data: dict):
         if decoded_payload is None:
             decoded_payload = {}
         conn = db()
-        context = load_device_profile_context_for_webhook(conn, device_id)
+        context = load_device_profile_context_for_webhook(conn, device_id, raw_envelope=data)
         device = context['device']
         profile = context['profile']
         node_type = str(profile.get('node_type') or '').strip().lower()

@@ -788,7 +788,9 @@ def admin_summary():
                 dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
 
                 if dt.tzinfo is not None:
-                    dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                    dt = dt.astimezone(timezone.utc)
+                else:
+                    dt = dt.replace(tzinfo=timezone.utc)
 
                 return dt
             except Exception:
@@ -800,7 +802,8 @@ def admin_summary():
                 "%Y-%m-%dT%H:%M:%S.%f"
             ]:
                 try:
-                    return datetime.strptime(text.replace("Z", ""), fmt)
+                    dt = datetime.strptime(text.replace("Z", ""), fmt)
+                    return dt.replace(tzinfo=timezone.utc)
                 except Exception:
                     pass
 
