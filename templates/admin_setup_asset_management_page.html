@@ -453,10 +453,10 @@
     <div class="note-card">
         <h2>Provisioning Readiness Notes</h2>
         <ul>
-            <li><strong>Network requirement:</strong> During LILYGO provisioning, the Raspberry Pi backend and the LILYGO must be connected to the same local network.</li>
-            <li><strong>Arduino firmware:</strong> The Wi-Fi SSID and password inside the Arduino code must match the Wi-Fi network used by the Raspberry Pi.</li>
-            <li><strong>Correct setup order:</strong> Create client → site → building → floor → upload maps → draw rooms → configure gateway → provision LILYGO.</li>
-            <li><strong>Room requirement:</strong> Rooms should exist before provisioning, because the LILYGO receives a valid room_id from the backend.</li>
+            <li><strong>No shared network needed:</strong> The node runs in pure LoRa mode (Wi-Fi and Bluetooth are switched off in firmware). It reaches the backend over LoRaWAN via the gateway and The Things Network, so the node and the server do not need to be on the same network &mdash; or even in the same country. What the <em>server</em> needs is to be reachable by TTN's webhook.</li>
+            <li><strong>Arduino firmware:</strong> There is no Wi-Fi SSID or password in the sketch. What must match is <code>firmware/lorawan_credentials.h</code>, generated from your <code>.env</code> with <code>python tools/generate_lorawan_credentials.py</code>. Every node is flashed with the identical sketch; only the sensor reads inside <code>do_send()</code> differ.</li>
+            <li><strong>Setup order:</strong> Devices self-register on their first uplink, so they can be powered on at any time &mdash; no hierarchy is required first. Recommended order: flash and power the node (it appears under Discovered Devices) → create client → site → building → floor → upload maps → optionally draw rooms → place the node from the discovery inbox.</li>
+            <li><strong>Rooms are optional:</strong> Placement is anchored to a <em>floor</em>, not a room. A device may be placed directly on a floor with no room assigned. The node receives nothing from the backend &mdash; it only transmits; the backend resolves the hierarchy when you place it.</li>
             <li><strong>Swagger policy:</strong> Swagger remains only for developer testing. Normal setup should be completed from the Admin UI.</li>
         </ul>
     </div>
