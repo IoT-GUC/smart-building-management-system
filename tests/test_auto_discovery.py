@@ -1,10 +1,9 @@
-import pytest
 from app.main import (
     create_login_session,
     create_password_hash,
+    get_sensor_profile_detail,
     process_ttn_webhook_background,
     validate_decoded_payload_against_profile,
-    get_sensor_profile_detail,
 )
 
 

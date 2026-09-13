@@ -1,4 +1,3 @@
-import csv
 import io
 import json
 from datetime import datetime
@@ -8,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.db.connection import get_db_connection as db
 from app.main import ADMIN_PASSWORD, get_device_scope_for_audit, log_audit_event
+from app.services.export_safety import SafeDictWriter
 
 router = APIRouter()
 
@@ -124,7 +124,7 @@ def export_alarm_history_csv(
             "telemetry"
         ]
 
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = SafeDictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
 
         for row in rows:

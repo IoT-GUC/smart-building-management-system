@@ -4,11 +4,13 @@ logger = logging.getLogger(__name__)
 
 import csv
 import json
+import math
 import secrets
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
+from app.config import settings
 from app.db.connection import get_db_connection as db
 from app.main import (
     FORMATTERS,
@@ -29,6 +31,8 @@ from app.main import (
     set_device_formatter,
     set_device_formatter_from_profile,
 )
+from app.services.device_state import build_device_state
+from app.services.export_safety import redact_secrets
 
 router = APIRouter()
 
@@ -84,7 +88,7 @@ def devices_status():
                 b.name as building
             FROM devices d
             LEFT JOIN rooms r ON d.room_id = r.id
-            LEFT JOIN floors f ON r.floor_id = f.id
+            LEFT JOIN floors f ON f.id = COALESCE(d.floor_id, r.floor_id)
             LEFT JOIN buildings b ON f.building_id = b.id
             ORDER BY
                 COALESCE(d.label, d.device_id),
@@ -230,8 +234,15 @@ def devices_status():
             # 6. BUILD DEVICE RESPONSE
             # =================================================
 
+            state = build_device_state(
+                device,
+                stale_after_seconds=settings.DEVICE_STALE_AFTER_SECONDS,
+                offline_after_seconds=settings.DEVICE_OFFLINE_AFTER_SECONDS,
+            )
+
             result.append(
                 {
+                    **state,
                     "device_id": device_id,
 
                     "node_type": (
@@ -412,12 +423,20 @@ def get_unplaced_devices():
 
         result = []
         for row in rows:
-            dev = dict(row)
+            # SELECT d.* carries the LoRaWAN root key.
+            dev = redact_secrets(dict(row))
             raw_telemetry = dev.pop("latest_telemetry_json", None)
             try:
                 dev["telemetry"] = json.loads(raw_telemetry) if raw_telemetry else {}
             except Exception:
                 dev["telemetry"] = {}
+            dev.update(
+                build_device_state(
+                    dev,
+                    stale_after_seconds=settings.DEVICE_STALE_AFTER_SECONDS,
+                    offline_after_seconds=settings.DEVICE_OFFLINE_AFTER_SECONDS,
+                )
+            )
             result.append(dev)
         return result
     finally:
@@ -441,8 +460,8 @@ def create_device(data: dict):
     if not device_id:
         raise HTTPException(status_code=400, detail="device_id is required")
 
-    if not building_id and not room_id and not floor_id and not site_id:
-        raise HTTPException(status_code=400, detail="building_id, floor_id, room_id, or site_id is required")
+    if not room_id and not floor_id:
+        raise HTTPException(status_code=400, detail="floor_id or room_id is required")
 
     conn = db()
     try:
@@ -451,10 +470,16 @@ def create_device(data: dict):
             raise HTTPException(status_code=400, detail=f"Device '{device_id}' already exists")
 
         client_id = None
+        building_name = None
+        floor_name = None
+        room_name = None
 
         if room_id:
             room_row = conn.execute("""
-                SELECT r.id as room_id, f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                SELECT r.id as room_id, r.room_name,
+                       f.id as floor_id, f.name as floor_name,
+                       b.id as building_id, b.name as building_name,
+                       s.id as site_id, c.id as client_id
                 FROM rooms r
                 JOIN floors f ON r.floor_id = f.id
                 JOIN buildings b ON f.building_id = b.id
@@ -462,61 +487,46 @@ def create_device(data: dict):
                 LEFT JOIN clients c ON s.client_id = c.id
                 WHERE r.id = ?
             """, (room_id,)).fetchone()
-            if room_row:
-                room_id = room_row["room_id"]
-                floor_id = room_row["floor_id"]
-                building_id = room_row["building_id"]
-                site_id = room_row["site_id"]
-                client_id = room_row["client_id"]
+            if not room_row:
+                raise HTTPException(status_code=404, detail=f"Room with ID {room_id} not found")
+            room_id = room_row["room_id"]
+            floor_id = room_row["floor_id"]
+            building_id = room_row["building_id"]
+            site_id = room_row["site_id"]
+            client_id = room_row["client_id"]
+            building_name = room_row["building_name"]
+            floor_name = room_row["floor_name"]
+            room_name = room_row["room_name"]
         elif floor_id:
             floor_row = conn.execute("""
-                SELECT f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                SELECT f.id as floor_id, f.name as floor_name,
+                       b.id as building_id, b.name as building_name,
+                       s.id as site_id, c.id as client_id
                 FROM floors f
                 JOIN buildings b ON f.building_id = b.id
                 LEFT JOIN sites s ON b.site_id = s.id
                 LEFT JOIN clients c ON s.client_id = c.id
                 WHERE f.id = ?
             """, (floor_id,)).fetchone()
-            if floor_row:
-                floor_id = floor_row["floor_id"]
-                building_id = floor_row["building_id"]
-                site_id = floor_row["site_id"]
-                client_id = floor_row["client_id"]
-        elif building_id:
-            bldg_row = conn.execute("""
-                SELECT b.id as building_id, s.id as site_id, c.id as client_id
-                FROM buildings b
-                LEFT JOIN sites s ON b.site_id = s.id
-                LEFT JOIN clients c ON s.client_id = c.id
-                WHERE b.id = ?
-            """, (building_id,)).fetchone()
-            if bldg_row:
-                building_id = bldg_row["building_id"]
-                site_id = bldg_row["site_id"]
-                client_id = bldg_row["client_id"]
-            else:
-                raise HTTPException(status_code=404, detail=f"Building with ID {building_id} not found")
-        elif site_id:
-            site_row = conn.execute("""
-                SELECT s.id as site_id, c.id as client_id
-                FROM sites s
-                LEFT JOIN clients c ON s.client_id = c.id
-                WHERE s.id = ?
-            """, (site_id,)).fetchone()
-            if site_row:
-                site_id = site_row["site_id"]
-                client_id = site_row["client_id"]
-            else:
-                raise HTTPException(status_code=404, detail=f"Site with ID {site_id} not found")
+            if not floor_row:
+                raise HTTPException(status_code=404, detail=f"Floor with ID {floor_id} not found")
+            floor_id = floor_row["floor_id"]
+            building_id = floor_row["building_id"]
+            site_id = floor_row["site_id"]
+            client_id = floor_row["client_id"]
+            building_name = floor_row["building_name"]
+            floor_name = floor_row["floor_name"]
 
         conn.execute("""
             INSERT INTO devices (
                 device_id, chip_mac, dev_eui, app_key, node_type, label,
-                building_id, floor_id, room_id, site_id, client_id, profile_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                building_id, floor_id, room_id, site_id, client_id, profile_id,
+                building, floor, room
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             device_id, chip_mac, dev_eui, app_key, node_type, label,
-            building_id, floor_id, room_id, site_id, client_id, profile_id
+            building_id, floor_id, room_id, site_id, client_id, profile_id,
+            building_name, floor_name, room_name,
         ))
 
         conn.commit()
@@ -546,8 +556,8 @@ def assign_device_to_building(device_id: str, data: dict):
     floor_id = data.get("floor_id")
     room_id = data.get("room_id")
 
-    if not building_id and not floor_id and not room_id:
-        raise HTTPException(status_code=400, detail="building_id, floor_id, or room_id is required")
+    if not floor_id and not room_id:
+        raise HTTPException(status_code=400, detail="floor_id or room_id is required")
 
     conn = db()
     try:
@@ -557,10 +567,16 @@ def assign_device_to_building(device_id: str, data: dict):
 
         site_id = None
         client_id = None
+        building_name = None
+        floor_name = None
+        room_name = None
 
         if room_id:
             room_row = conn.execute("""
-                SELECT r.id as room_id, f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                SELECT r.id as room_id, r.room_name,
+                       f.id as floor_id, f.name as floor_name,
+                       b.id as building_id, b.name as building_name,
+                       s.id as site_id, c.id as client_id
                 FROM rooms r
                 JOIN floors f ON r.floor_id = f.id
                 JOIN buildings b ON f.building_id = b.id
@@ -568,46 +584,51 @@ def assign_device_to_building(device_id: str, data: dict):
                 LEFT JOIN clients c ON s.client_id = c.id
                 WHERE r.id = ?
             """, (room_id,)).fetchone()
-            if room_row:
-                room_id = room_row["room_id"]
-                floor_id = room_row["floor_id"]
-                building_id = room_row["building_id"]
-                site_id = room_row["site_id"]
-                client_id = room_row["client_id"]
+            if not room_row:
+                raise HTTPException(status_code=404, detail=f"Room with ID {room_id} not found")
+            room_id = room_row["room_id"]
+            floor_id = room_row["floor_id"]
+            building_id = room_row["building_id"]
+            site_id = room_row["site_id"]
+            client_id = room_row["client_id"]
+            building_name = room_row["building_name"]
+            floor_name = room_row["floor_name"]
+            room_name = room_row["room_name"]
         elif floor_id:
             floor_row = conn.execute("""
-                SELECT f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                SELECT f.id as floor_id, f.name as floor_name,
+                       b.id as building_id, b.name as building_name,
+                       s.id as site_id, c.id as client_id
                 FROM floors f
                 JOIN buildings b ON f.building_id = b.id
                 LEFT JOIN sites s ON b.site_id = s.id
                 LEFT JOIN clients c ON s.client_id = c.id
                 WHERE f.id = ?
             """, (floor_id,)).fetchone()
-            if floor_row:
-                floor_id = floor_row["floor_id"]
-                building_id = floor_row["building_id"]
-                site_id = floor_row["site_id"]
-                client_id = floor_row["client_id"]
-        elif building_id:
-            bldg_row = conn.execute("""
-                SELECT b.id as building_id, s.id as site_id, c.id as client_id
-                FROM buildings b
-                LEFT JOIN sites s ON b.site_id = s.id
-                LEFT JOIN clients c ON s.client_id = c.id
-                WHERE b.id = ?
-            """, (building_id,)).fetchone()
-            if bldg_row:
-                building_id = bldg_row["building_id"]
-                site_id = bldg_row["site_id"]
-                client_id = bldg_row["client_id"]
-            else:
-                raise HTTPException(status_code=404, detail=f"Building with ID {building_id} not found")
-
+            if not floor_row:
+                raise HTTPException(status_code=404, detail=f"Floor with ID {floor_id} not found")
+            floor_id = floor_row["floor_id"]
+            building_id = floor_row["building_id"]
+            site_id = floor_row["site_id"]
+            client_id = floor_row["client_id"]
+            building_name = floor_row["building_name"]
+            floor_name = floor_row["floor_name"]
         conn.execute("""
             UPDATE devices
-            SET building_id = ?, floor_id = ?, room_id = ?, site_id = ?, client_id = ?
+            SET building_id = ?, floor_id = ?, room_id = ?, site_id = ?, client_id = ?,
+                building = ?, floor = ?, room = ?
             WHERE device_id = ?
-        """, (building_id, floor_id, room_id, site_id, client_id, device_id))
+        """, (
+            building_id,
+            floor_id,
+            room_id,
+            site_id,
+            client_id,
+            building_name,
+            floor_name,
+            room_name,
+            device_id,
+        ))
 
         conn.commit()
 
@@ -640,7 +661,8 @@ def get_building_devices(building_id: int):
             ORDER BY COALESCE(d.label, d.device_id)
         """, (building_id, building_id, building_id)).fetchall()
 
-        return [dict(row) for row in rows]
+        # SELECT d.* carries the LoRaWAN root key.
+        return [redact_secrets(dict(row)) for row in rows]
     finally:
         conn.close()
 
@@ -670,7 +692,8 @@ def get_site_devices(site_id: int):
             ORDER BY COALESCE(d.label, d.device_id)
         """, (site_id, site_id, site_id)).fetchall()
 
-        return [dict(row) for row in rows]
+        # SELECT d.* carries the LoRaWAN root key.
+        return [redact_secrets(dict(row)) for row in rows]
     finally:
         conn.close()
 
@@ -699,9 +722,14 @@ def assign_device_to_room(device_id: str, data: dict):
             raise HTTPException(status_code=404, detail="Device not found")
 
         room = conn.execute("""
-        SELECT *
-        FROM rooms
-        WHERE id = ?
+        SELECT r.*, f.id AS resolved_floor_id, f.name AS floor_name,
+               b.id AS resolved_building_id, b.name AS building_name,
+               s.id AS resolved_site_id, s.client_id AS resolved_client_id
+        FROM rooms r
+        JOIN floors f ON f.id = r.floor_id
+        JOIN buildings b ON b.id = f.building_id
+        LEFT JOIN sites s ON s.id = b.site_id
+        WHERE r.id = ?
     """, (room_id,)).fetchone()
 
         if not room:
@@ -720,11 +748,25 @@ def assign_device_to_room(device_id: str, data: dict):
         conn.execute("""
         UPDATE devices
         SET room_id = ?,
+            floor_id = ?,
+            building_id = ?,
+            site_id = ?,
+            client_id = ?,
+            building = ?,
+            floor = ?,
+            room = ?,
             x = ?,
             y = ?
         WHERE device_id = ?
     """, (
             room_id,
+            room_dict["resolved_floor_id"],
+            room_dict["resolved_building_id"],
+            room_dict["resolved_site_id"],
+            room_dict["resolved_client_id"],
+            room_dict["building_name"],
+            room_dict["floor_name"],
+            room_dict["room_name"],
             x,
             y,
             device_id
@@ -849,6 +891,7 @@ def get_device_location(device_id: str):
             )
 
         room_id = device["room_id"]
+        floor_id = device["floor_id"]
     
         room = None
         floor = None
@@ -859,7 +902,10 @@ def get_device_location(device_id: str):
         if room_id:
             room = conn.execute("SELECT * FROM rooms WHERE id = ?", (room_id,)).fetchone()
         
-        if room and room["floor_id"]:
+        if floor_id:
+            floor = conn.execute("SELECT * FROM floors WHERE id = ?", (floor_id,)).fetchone()
+        elif room and room["floor_id"]:
+            # Legacy rows may predate the canonical devices.floor_id column.
             floor = conn.execute("SELECT * FROM floors WHERE id = ?", (room["floor_id"],)).fetchone()
         
         if floor and floor["building_id"]:
@@ -874,7 +920,7 @@ def get_device_location(device_id: str):
         conn.close()
 
         return {
-            "device": dict(device),
+            "device": redact_secrets(dict(device)),
             "room": dict(room) if room else None,
             "floor": dict(floor) if floor else None,
             "building": dict(building) if building else None,
@@ -892,13 +938,29 @@ def update_device_position(
     y = data.get("y")
     room_id = data.get("room_id")
     floor_id = data.get("floor_id")
-    building_id = data.get("building_id")
-    site_id = data.get("site_id")
+
+    if room_id is None and floor_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="A valid floor_id or room_id is required for device placement",
+        )
 
     if x is None or y is None:
         raise HTTPException(
             status_code=400,
             detail="x and y are required"
+        )
+    if (
+        isinstance(x, bool)
+        or isinstance(y, bool)
+        or not isinstance(x, (int, float))
+        or not isinstance(y, (int, float))
+        or not math.isfinite(x)
+        or not math.isfinite(y)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="x and y must be finite numbers",
         )
 
     conn = db()
@@ -921,7 +983,10 @@ def update_device_position(
 
         if room_id is not None:
             room_row = conn.execute("""
-                SELECT r.id as room_id, f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                SELECT r.id as room_id, r.room_name,
+                       f.id as floor_id, f.name as floor_name,
+                       b.id as building_id, b.name as building_name,
+                       s.id as site_id, c.id as client_id
                 FROM rooms r
                 JOIN floors f ON r.floor_id = f.id
                 JOIN buildings b ON f.building_id = b.id
@@ -948,6 +1013,9 @@ def update_device_position(
                     building_id = ?,
                     site_id = ?,
                     client_id = ?,
+                    building = ?,
+                    floor = ?,
+                    room = ?,
                     is_placed = 1
                 WHERE device_id = ?
             """, (
@@ -958,12 +1026,17 @@ def update_device_position(
                 room_row["building_id"],
                 room_row["site_id"],
                 room_row["client_id"],
+                room_row["building_name"],
+                room_row["floor_name"],
+                room_row["room_name"],
                 device_id
             ))
 
         elif floor_id is not None:
             floor_row = conn.execute("""
-                SELECT f.id as floor_id, b.id as building_id, s.id as site_id, c.id as client_id
+                SELECT f.id as floor_id, f.name as floor_name,
+                       b.id as building_id, b.name as building_name,
+                       s.id as site_id, c.id as client_id
                 FROM floors f
                 JOIN buildings b ON f.building_id = b.id
                 LEFT JOIN sites s ON b.site_id = s.id
@@ -972,78 +1045,33 @@ def update_device_position(
                 LIMIT 1
             """, (floor_id,)).fetchone()
 
-            if floor_row:
-                conn.execute("""
-                    UPDATE devices
-                    SET
-                        x = ?,
-                        y = ?,
-                        floor_id = ?,
-                        building_id = ?,
-                        site_id = ?,
-                        client_id = ?,
-                        is_placed = 1
-                    WHERE device_id = ?
-                """, (
-                    x,
-                    y,
-                    floor_row["floor_id"],
-                    floor_row["building_id"],
-                    floor_row["site_id"],
-                    floor_row["client_id"],
-                    device_id
-                ))
-            else:
-                conn.execute("""
-                    UPDATE devices
-                    SET x = ?, y = ?, is_placed = 1
-                    WHERE device_id = ?
-                """, (x, y, device_id))
+            if not floor_row:
+                raise HTTPException(status_code=404, detail="Floor not found")
 
-        elif site_id is not None:
-            site_row = conn.execute("""
-                SELECT s.id as site_id, c.id as client_id
-                FROM sites s
-                LEFT JOIN clients c ON s.client_id = c.id
-                WHERE s.id = ?
-                LIMIT 1
-            """, (site_id,)).fetchone()
-
-            if site_row:
-                conn.execute("""
-                    UPDATE devices
-                    SET
-                        x = ?,
-                        y = ?,
-                        site_id = ?,
-                        client_id = ?,
-                        is_placed = 1
-                    WHERE device_id = ?
-                """, (
-                    x,
-                    y,
-                    site_row["site_id"],
-                    site_row["client_id"],
-                    device_id
-                ))
-            else:
-                conn.execute("""
-                    UPDATE devices
-                    SET x = ?, y = ?, is_placed = 1
-                    WHERE device_id = ?
-                """, (x, y, device_id))
-
-        else:
             conn.execute("""
                 UPDATE devices
                 SET
                     x = ?,
                     y = ?,
+                    room_id = NULL,
+                    floor_id = ?,
+                    building_id = ?,
+                    site_id = ?,
+                    client_id = ?,
+                    building = ?,
+                    floor = ?,
+                    room = NULL,
                     is_placed = 1
                 WHERE device_id = ?
             """, (
                 x,
                 y,
+                floor_row["floor_id"],
+                floor_row["building_id"],
+                floor_row["site_id"],
+                floor_row["client_id"],
+                floor_row["building_name"],
+                floor_row["floor_name"],
                 device_id
             ))
 
@@ -1060,7 +1088,11 @@ def update_device_position(
         tracked_fields = [
             "x",
             "y",
-            "room_id"
+            "client_id",
+            "site_id",
+            "building_id",
+            "floor_id",
+            "room_id",
         ]
 
         changed_fields = {}
@@ -1119,7 +1151,11 @@ def update_device_position(
             "device_id": device_id,
             "x": x,
             "y": y,
-            "room_id": room_id,
+            "client_id": new_device.get("client_id"),
+            "site_id": new_device.get("site_id"),
+            "building_id": new_device.get("building_id"),
+            "floor_id": new_device.get("floor_id"),
+            "room_id": new_device.get("room_id"),
             "changed_fields": changed_fields
         }
     except Exception:

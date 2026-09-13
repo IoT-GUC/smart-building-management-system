@@ -17,3 +17,10 @@ Thumbs.db
 *.whl
 *.csv
 .env
+firmware/lorawan_credentials.h
+.docker-local-ca.cer
+
+# Runtime-uploaded floorplan/site images. Existing committed demo assets
+# stay tracked; this only stops new uploads being committed by accident.
+uploads/*
+!uploads/.gitkeep

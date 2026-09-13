@@ -36,22 +36,24 @@
 // 1. LORAWAN OTAA CREDENTIALS
 // ==============================================================================
 
+#if __has_include("lorawan_credentials.h")
+#include "lorawan_credentials.h"
+#else
+#error "Missing firmware/lorawan_credentials.h. Run: python tools/generate_lorawan_credentials.py"
+#endif
+
 // AppEUI / JoinEUI (8 bytes, Little-Endian format for TTN)
-// Example: 00 00 00 00 00 00 00 00
-static const u1_t PROGMEM APPEUI[8] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+static const u1_t PROGMEM APPEUI[8] = { SBMS_JOIN_EUI_LSB_BYTES };
 void os_getArtEui (u1_t* buf) { memcpy_P(buf, APPEUI, 8); }
 
 // AppKey (16 bytes, Big-Endian format from TTN Application)
-// Paste your 16-byte TTN Application Root Key here:
-static const u1_t PROGMEM APPKEY[16] = {
-    0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6,
-    0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C
-};
+static const u1_t PROGMEM APPKEY[16] = { SBMS_APP_KEY_BYTES };
 void os_getDevKey (u1_t* buf) { memcpy_P(buf, APPKEY, 16); }
 
 // DevEUI is generated dynamically from the ESP32 chip's unique MAC address!
 // (Little-Endian format required by LMIC)
 static u1_t DEVEUI[8];
+static const u1_t PROGMEM DEV_EUI_XOR[8] = { SBMS_DEV_EUI_XOR_LSB_BYTES };
 void os_getDevEui (u1_t* buf) { memcpy(buf, DEVEUI, 8); }
 
 // ==============================================================================
@@ -89,6 +91,13 @@ void initUniqueDevEUI() {
     DEVEUI[5] = mac[2];
     DEVEUI[6] = mac[1];
     DEVEUI[7] = mac[0];
+
+    // Namespace the hardware EUI for this TTN application. This prevents a
+    // board previously registered in another TTN app from claiming the same
+    // globally unique DevEUI while keeping derivation fully deterministic.
+    for (int i = 0; i < 8; i++) {
+        DEVEUI[i] ^= pgm_read_byte(&DEV_EUI_XOR[i]);
+    }
 
     Serial.print(F("[INFO] Unique Hardware DevEUI (MSB): "));
     for (int i = 7; i >= 0; i--) {

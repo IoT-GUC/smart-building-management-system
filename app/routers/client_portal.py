@@ -1,4 +1,3 @@
-import csv
 import io
 import json
 from datetime import datetime
@@ -6,13 +5,17 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.config import settings
 from app.db.connection import get_db_connection as db
 from app.main import (
     build_audit_message,
     get_local_latest_telemetry,
     get_user_access_rows,
+    safe_user_dict,
     user_can_access_floor,
 )
+from app.services.device_state import build_device_state
+from app.services.export_safety import SafeDictWriter, redact_secrets
 
 router = APIRouter()
 
@@ -91,7 +94,7 @@ def client_allowed_floors(user_id: int):
         conn.close()
 
         return {
-            "user": dict(user),
+            "user": safe_user_dict(user),
             "floors": list(allowed_floors.values())
         }
     finally:
@@ -154,7 +157,7 @@ def client_floor_live(user_id: int, floor_id: int):
 
             for d in device_rows:
           
-              device = dict(d)
+              device = redact_secrets(dict(d))
 
               local_telemetry = get_local_latest_telemetry(conn, device["device_id"])
 
@@ -162,10 +165,44 @@ def client_floor_live(user_id: int, floor_id: int):
               
                  device["telemetry"] = local_telemetry
 
+              device.update(
+                  build_device_state(
+                      device,
+                      stale_after_seconds=settings.DEVICE_STALE_AFTER_SECONDS,
+                      offline_after_seconds=settings.DEVICE_OFFLINE_AFTER_SECONDS,
+                  )
+              )
+
               devices.append(device)
 
             room_dict["devices"] = devices
             rooms.append(room_dict)
+
+        floor_devices = []
+        if access["can_view_devices"]:
+            floor_device_rows = conn.execute("""
+            SELECT *
+            FROM devices
+            WHERE floor_id = ? AND room_id IS NULL
+            ORDER BY label
+        """, (floor_id,)).fetchall()
+
+            for row in floor_device_rows:
+                device = redact_secrets(dict(row))
+                local_telemetry = get_local_latest_telemetry(
+                    conn,
+                    device["device_id"],
+                )
+                if local_telemetry:
+                    device["telemetry"] = local_telemetry
+                device.update(
+                    build_device_state(
+                        device,
+                        stale_after_seconds=settings.DEVICE_STALE_AFTER_SECONDS,
+                        offline_after_seconds=settings.DEVICE_OFFLINE_AFTER_SECONDS,
+                    )
+                )
+                floor_devices.append(device)
 
         gateways = []
 
@@ -182,7 +219,7 @@ def client_floor_live(user_id: int, floor_id: int):
         conn.close()
 
         return {
-            "user": dict(user),
+            "user": safe_user_dict(user),
             "permissions": {
                 "access_level": access["access_level"],
                 "can_view_devices": access["can_view_devices"],
@@ -193,6 +230,7 @@ def client_floor_live(user_id: int, floor_id: int):
             },
             "floor": dict(floor),
             "rooms": rooms if access["can_view_devices"] else [],
+            "floor_devices": floor_devices,
             "gateways": gateways
         }
     finally:
@@ -338,7 +376,7 @@ def client_allowed_structure(user_id: int):
         conn.close()
 
         return {
-            "user": dict(user),
+            "user": safe_user_dict(user),
             "structure": final_structure
         }
     finally:
@@ -494,7 +532,7 @@ def client_portal_alarm_history_export_csv(
             access_floor_id = access["floor_id"]
 
             if access_floor_id:
-                scope_clauses.append("r.floor_id = ?")
+                scope_clauses.append("f.id = ?")
                 scope_params.append(access_floor_id)
 
             elif access_building_id:
@@ -535,7 +573,7 @@ def client_portal_alarm_history_export_csv(
             params.append(building_id)
 
         if floor_id is not None:
-            where_clauses.append("r.floor_id = ?")
+            where_clauses.append("f.id = ?")
             params.append(floor_id)
 
         if room_id is not None:
@@ -594,12 +632,12 @@ def client_portal_alarm_history_export_csv(
             s.client_id AS scope_client_id,
             b.site_id AS scope_site_id,
             f.building_id AS scope_building_id,
-            r.floor_id AS scope_floor_id,
+            f.id AS scope_floor_id,
             d.room_id AS scope_room_id
         FROM alarm_history ah
         LEFT JOIN devices d ON ah.device_id = d.device_id
         LEFT JOIN rooms r ON d.room_id = r.id
-        LEFT JOIN floors f ON r.floor_id = f.id
+        LEFT JOIN floors f ON f.id = COALESCE(d.floor_id, r.floor_id)
         LEFT JOIN buildings b ON f.building_id = b.id
         LEFT JOIN sites s ON b.site_id = s.id
         {where_sql}
@@ -633,7 +671,7 @@ def client_portal_alarm_history_export_csv(
             "telemetry"
         ]
 
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = SafeDictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
 
         for row in rows:
@@ -722,7 +760,7 @@ def client_portal_full_structure_export_csv(user_id: int):
 
         def clean_details(data):
             try:
-                return json.dumps(data, ensure_ascii=False, default=str)
+                return json.dumps(redact_secrets(data), ensure_ascii=False, default=str)
             except Exception:
                 return str(data)
 
@@ -1006,7 +1044,7 @@ def client_portal_full_structure_export_csv(user_id: int):
             "details"
         ]
 
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = SafeDictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
 
         def write_row(
@@ -1479,6 +1517,7 @@ def client_portal_activity_log(
                 item["details"] = json.loads(item["details"]) if item["details"] else {}
             except Exception:
                 item["details"] = {}
+            item["details"] = redact_secrets(item["details"])
 
             if not item.get("message"):
                 item["message"] = build_audit_message(

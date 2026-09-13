@@ -110,3 +110,41 @@ async def test_client_cannot_widen_its_own_scope():
 
     await manager.broadcast({"type": "ALARM"}, client_id=2)
     assert ws.sent == []
+
+
+@pytest.mark.anyio
+async def test_floor_grant_does_not_receive_other_floor_alarm():
+    manager = ConnectionManager()
+    ws = _FakeSocket()
+    manager.active_connections.append({
+        "ws": ws,
+        "role": "client",
+        "user_id": 1,
+        "allowed_client_ids": {1},
+        "allowed_scopes": [{
+            "client_id": 1,
+            "site_id": 10,
+            "building_id": 20,
+            "floor_id": 30,
+        }],
+        "client_id": None,
+        "site_id": None,
+    })
+
+    await manager.broadcast(
+        {"type": "ALARM"},
+        client_id=1,
+        site_id=10,
+        building_id=20,
+        floor_id=31,
+    )
+    assert ws.sent == []
+
+    await manager.broadcast(
+        {"type": "ALARM"},
+        client_id=1,
+        site_id=10,
+        building_id=20,
+        floor_id=30,
+    )
+    assert len(ws.sent) == 1

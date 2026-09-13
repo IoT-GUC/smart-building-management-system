@@ -127,7 +127,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
         
         // Trigger download
-        window.location.href = \`/api/firmware/generate-sensor-template?name=\${name}\`;
+        window.location.href = `/api/firmware/generate-sensor-template?name=${name}`;
         close();
     };
 

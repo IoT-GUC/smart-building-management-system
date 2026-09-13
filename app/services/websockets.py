@@ -24,6 +24,7 @@ class ConnectionManager:
         *,
         role: str,
         allowed_client_ids: Iterable[int] | None = None,
+        allowed_scopes: Iterable[dict[str, int | None]] | None = None,
         user_id: int | None = None,
     ):
         await websocket.accept()
@@ -33,6 +34,7 @@ class ConnectionManager:
             "user_id": user_id,
             # Authoritative, server-resolved tenant scope.
             "allowed_client_ids": {int(c) for c in (allowed_client_ids or ()) if c is not None},
+            "allowed_scopes": [dict(scope) for scope in (allowed_scopes or ())],
             # Optional client-chosen narrowing within that scope.
             "client_id": None,
             "site_id": None,
@@ -79,19 +81,37 @@ class ConnectionManager:
         connection: dict[str, Any],
         client_id: int | None,
         site_id: int | None,
+        building_id: int | None = None,
+        floor_id: int | None = None,
     ) -> bool:
         role = connection.get("role")
 
         if role == "admin":
             allowed = True
         elif role == "client":
-            # Fail closed: a client only ever receives events for a tenant it
-            # has been granted access to. An event with no client_id cannot be
-            # attributed to a tenant, so it is not delivered.
-            allowed = (
-                client_id is not None
-                and int(client_id) in connection["allowed_client_ids"]
-            )
+            scopes = connection.get("allowed_scopes") or []
+            if scopes:
+                event_scope = {
+                    "client_id": client_id,
+                    "site_id": site_id,
+                    "building_id": building_id,
+                    "floor_id": floor_id,
+                }
+                allowed = any(
+                    all(
+                        expected is None or event_scope[key] == expected
+                        for key, expected in scope.items()
+                        if key in event_scope
+                    )
+                    for scope in scopes
+                )
+            else:
+                # Backwards-compatible client-level grants. Events without a
+                # tenant id remain fail-closed.
+                allowed = (
+                    client_id is not None
+                    and int(client_id) in connection["allowed_client_ids"]
+                )
         else:
             allowed = False
 
@@ -115,12 +135,20 @@ class ConnectionManager:
         message: Any,
         client_id: int | None = None,
         site_id: int | None = None,
+        building_id: int | None = None,
+        floor_id: int | None = None,
     ):
         text = message if isinstance(message, str) else json.dumps(message)
 
         disconnected = []
         for connection in list(self.active_connections):
-            if not self._may_receive(connection, client_id, site_id):
+            if not self._may_receive(
+                connection,
+                client_id,
+                site_id,
+                building_id,
+                floor_id,
+            ):
                 continue
             try:
                 await connection["ws"].send_text(text)

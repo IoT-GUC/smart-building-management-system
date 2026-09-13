@@ -1,5 +1,5 @@
-import pytest
 from app.main import create_login_session, create_password_hash
+
 
 def test_device_building_creation_and_assignment(client, db_conn):
     # 0. Seed admin user & session
@@ -35,6 +35,10 @@ def test_device_building_creation_and_assignment(client, db_conn):
     assert f_res.status_code == 200, f_res.text
     f_id = f_res.json()["floor_id"]
 
+    f2_res = client.post("/floors", json={"building_id": b2_id, "name": "Floor 2", "floor_number": "2"})
+    assert f2_res.status_code == 200, f2_res.text
+    f2_id = f2_res.json()["floor_id"]
+
     r_res = client.post(f"/floors/{f_id}/rooms", json={
         "room_name": "Lobby 101",
         "polygon_points": [{"x": 10, "y": 10}, {"x": 50, "y": 10}, {"x": 50, "y": 50}]
@@ -64,7 +68,7 @@ def test_device_building_creation_and_assignment(client, db_conn):
 
     # 4. Test PUT /devices/{device_id}/assign-building to reassign device to Beta Tower (b2_id)
     reassign_res = client.put("/devices/BUILDING-NODE-001/assign-building", json={
-        "building_id": b2_id
+        "floor_id": f2_id
     })
     assert reassign_res.status_code == 200, reassign_res.text
     assert reassign_res.json()["status"] == "assigned"
@@ -88,4 +92,160 @@ def test_device_building_creation_and_assignment(client, db_conn):
         "device_id": "BUILDING-NODE-999",
         "building_id": 999999
     })
-    assert bad_bldg_res.status_code == 404
+    assert bad_bldg_res.status_code == 400
+
+
+def test_position_move_clears_stale_lower_location_ids(client, db_conn):
+    pw_data = create_password_hash("PositionAdminPass123!")
+    cursor = db_conn.execute(
+        """
+        INSERT INTO users (email, name, role, enabled, password_hash, password_salt)
+        VALUES ('position_admin@test.local', 'Position Admin', 'admin', 1, ?, ?)
+        """,
+        (pw_data["password_hash"], pw_data["password_salt"]),
+    )
+    client.cookies.set("sbms_session", create_login_session(db_conn, cursor.lastrowid))
+
+    client_id = db_conn.execute(
+        "INSERT INTO clients (name) VALUES ('Position Client')"
+    ).lastrowid
+    site_id = db_conn.execute(
+        "INSERT INTO sites (client_id, name) VALUES (?, 'Position Site')",
+        (client_id,),
+    ).lastrowid
+    first_building = db_conn.execute(
+        "INSERT INTO buildings (site_id, name) VALUES (?, 'First Building')",
+        (site_id,),
+    ).lastrowid
+    second_building = db_conn.execute(
+        "INSERT INTO buildings (site_id, name) VALUES (?, 'Second Building')",
+        (site_id,),
+    ).lastrowid
+    second_floor = db_conn.execute(
+        "INSERT INTO floors (building_id, name) VALUES (?, 'New Floor')",
+        (second_building,),
+    ).lastrowid
+    floor_id = db_conn.execute(
+        "INSERT INTO floors (building_id, name) VALUES (?, 'Old Floor')",
+        (first_building,),
+    ).lastrowid
+    room_id = db_conn.execute(
+        """
+        INSERT INTO rooms (floor_id, room_name, polygon_points, x, y)
+        VALUES (?, 'Old Room', '[]', 0, 0)
+        """,
+        (floor_id,),
+    ).lastrowid
+    db_conn.execute(
+        """
+        INSERT INTO devices (
+            chip_mac, device_id, client_id, site_id, building_id, floor_id,
+            room_id, building, floor, room, is_placed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'First Building', 'Old Floor', 'Old Room', 1)
+        """,
+        (
+            "position-device-mac",
+            "position-device",
+            client_id,
+            site_id,
+            first_building,
+            floor_id,
+            room_id,
+        ),
+    )
+    db_conn.commit()
+
+    response = client.put(
+        "/devices/position-device/position",
+        json={"x": 5, "y": 7, "floor_id": second_floor},
+    )
+    assert response.status_code == 200, response.text
+
+    row = db_conn.execute(
+        "SELECT * FROM devices WHERE device_id = 'position-device'"
+    ).fetchone()
+    assert row["building_id"] == second_building
+    assert row["floor_id"] == second_floor
+    assert row["room_id"] is None
+    assert row["building"] == "Second Building"
+    assert row["floor"] == "New Floor"
+    assert row["room"] is None
+
+
+def test_position_rejects_unknown_scope_and_invalid_coordinates(client, db_conn):
+    pw_data = create_password_hash("PositionValidationPass123!")
+    cursor = db_conn.execute(
+        """
+        INSERT INTO users (email, name, role, enabled, password_hash, password_salt)
+        VALUES ('position_validation@test.local', 'Position Validation', 'admin', 1, ?, ?)
+        """,
+        (pw_data["password_hash"], pw_data["password_salt"]),
+    )
+    client.cookies.set("sbms_session", create_login_session(db_conn, cursor.lastrowid))
+    db_conn.execute(
+        "INSERT INTO devices (chip_mac, device_id) VALUES (?, ?)",
+        ("position-validation-mac", "position-validation-device"),
+    )
+    db_conn.commit()
+
+    unknown = client.put(
+        "/devices/position-validation-device/position",
+        json={"x": 1, "y": 2, "floor_id": 999999999},
+    )
+    invalid = client.put(
+        "/devices/position-validation-device/position",
+        json={"x": "left", "y": 2, "floor_id": 999999999},
+    )
+
+    assert unknown.status_code == 404
+    assert invalid.status_code == 400
+
+
+def test_device_cannot_be_placed_at_site_or_building_only(client, db_conn):
+    pw_data = create_password_hash("FloorOnlyPlacementPass123!")
+    cursor = db_conn.execute(
+        """
+        INSERT INTO users (email, name, role, enabled, password_hash, password_salt)
+        VALUES ('floor_only_admin@test.local', 'Floor Only Admin', 'admin', 1, ?, ?)
+        """,
+        (pw_data["password_hash"], pw_data["password_salt"]),
+    )
+    client.cookies.set("sbms_session", create_login_session(db_conn, cursor.lastrowid))
+    client_id = db_conn.execute(
+        "INSERT INTO clients (name) VALUES ('Floor Only Client')"
+    ).lastrowid
+    site_id = db_conn.execute(
+        "INSERT INTO sites (client_id, name) VALUES (?, 'Floor Only Site')",
+        (client_id,),
+    ).lastrowid
+    building_id = db_conn.execute(
+        "INSERT INTO buildings (site_id, name) VALUES (?, 'Floor Only Building')",
+        (site_id,),
+    ).lastrowid
+    db_conn.execute(
+        "INSERT INTO devices (chip_mac, device_id) VALUES (?, ?)",
+        ("floor-only-existing-mac", "floor-only-existing"),
+    )
+    db_conn.commit()
+
+    create_at_site = client.post(
+        "/devices",
+        json={"device_id": "site-only-device", "site_id": site_id},
+    )
+    create_at_building = client.post(
+        "/devices",
+        json={"device_id": "building-only-device", "building_id": building_id},
+    )
+    move_to_site = client.put(
+        "/devices/floor-only-existing/position",
+        json={"x": 1, "y": 2, "site_id": site_id},
+    )
+    move_to_building = client.put(
+        "/devices/floor-only-existing/position",
+        json={"x": 1, "y": 2, "building_id": building_id},
+    )
+
+    assert create_at_site.status_code == 400
+    assert create_at_building.status_code == 400
+    assert move_to_site.status_code == 400
+    assert move_to_building.status_code == 400

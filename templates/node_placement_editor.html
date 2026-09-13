@@ -416,7 +416,7 @@ hr{
 
 <div class="header">
     <h1>Node Placement Editor</h1>
-    <p>View floor plans or site photos, add devices directly to maps, drag nodes to position, and save location coordinates.</p>
+    <p>Choose a floor plan, add devices, drag nodes to position, and save their floor location.</p>
 </div>
 
 <div class="toolbar">
@@ -424,21 +424,13 @@ hr{
         ← Admin Home
     </button>
 
-    <label>View Mode:</label>
-    <select id="viewModeSelect" onchange="toggleViewMode()">
-        <option value="floor">Floor Plan View</option>
-        <option value="site">Site / Campus Photo View</option>
-    </select>
-
     <span id="floorControlGroup">
         <label>Floor:</label>
+        <input id="floorSearch" type="search" placeholder="Search client, site, building or floor" oninput="filterFloorOptions()">
         <select id="floorId" onchange="loadFloor()"></select>
     </span>
 
-    <span id="siteControlGroup" style="display:none;">
-        <label>Site / Campus:</label>
-        <select id="siteId" onchange="loadSiteMap()"></select>
-    </span>
+    <span id="floorBreadcrumb" class="hint">Select a floor</span>
 
     <button class="addDeviceBtn" onclick="openAddDeviceModal()">
         + Add New Device
@@ -525,11 +517,7 @@ hr{
             <option value="multi">Multi-Sensor Node</option>
         </select>
 
-        <label>Target Site</label>
-        <select id="modalSiteSelect"></select>
-
-        <label>Target Building (Optional)</label>
-        <select id="modalBuildingSelect"></select>
+        <p class="hint">The device will be added to the floor currently selected in the editor.</p>
 
         <div class="modalActions">
             <button class="addDeviceBtn" onclick="submitModalAddDevice()">Create & Add Device</button>
@@ -541,11 +529,7 @@ hr{
 </div>
 
 <script>
-let currentViewMode = "floor"; // "floor" or "site"
 let floorData = null;
-let siteData = null;
-let siteDevices = [];
-let allBuildings = [];
 let selectedDevice = null;
 let selectedNodeEl = null;
 let dragging = false;
@@ -593,6 +577,11 @@ function renderUnplacedDevices() {
     unplacedDevices.forEach(dev => {
         const item = document.createElement("div");
         item.className = "unplacedItem";
+        item.draggable = true;
+        item.addEventListener("dragstart", event => {
+            event.dataTransfer.setData("text/device-id", dev.device_id);
+            event.dataTransfer.effectAllowed = "move";
+        });
 
         let teleText = "";
         if (dev.telemetry && Object.keys(dev.telemetry).length > 0) {
@@ -605,6 +594,9 @@ function renderUnplacedDevices() {
             if (t.voltage !== undefined) parts.push(`⚡ ${t.voltage}V`);
             if (t.motion !== undefined) parts.push(t.motion ? "🚶 Motion" : "Clear");
             if (t.alarm !== undefined) parts.push(t.alarm ? "🚨 Alarm" : "OK");
+            if (t.rssi !== undefined) parts.push(`RSSI ${t.rssi} dBm`);
+            if (t.snr !== undefined) parts.push(`SNR ${t.snr} dB`);
+            if (t.gateway_id) parts.push(`Gateway ${t.gateway_id}`);
             if (parts.length > 0) teleText = parts.join(" | ");
         }
         if (!teleText) teleText = "Live on LoRaWAN";
@@ -617,6 +609,10 @@ function renderUnplacedDevices() {
             <div style="font-size:11px; color:#94a3b8; margin-top:3px;">
                 ${dev.dev_eui ? 'DevEUI: ' + dev.dev_eui : dev.device_id}
             </div>
+            <div style="font-size:11px; color:#cbd5e1; margin-top:3px;">
+                State: ${dev.connection_state || "never_connected"}
+                ${dev.last_seen ? " · Last seen " + dev.last_seen : ""}
+            </div>
             <div style="font-size:11px; color:#38bdf8; margin-top:3px; font-weight:bold;">
                 ${teleText}
             </div>
@@ -628,7 +624,7 @@ function renderUnplacedDevices() {
     });
 }
 
-function placeUnplacedDevice(deviceId) {
+function placeUnplacedDevice(deviceId, displayX = null, displayY = null) {
     const dev = unplacedDevices.find(d => d.device_id === deviceId);
     if (!dev) return;
 
@@ -637,8 +633,8 @@ function placeUnplacedDevice(deviceId) {
         return;
     }
 
-    const centerDisplayX = Math.round(image.clientWidth / 2);
-    const centerDisplayY = Math.round(image.clientHeight / 2);
+    const centerDisplayX = displayX ?? Math.round(image.clientWidth / 2);
+    const centerDisplayY = displayY ?? Math.round(image.clientHeight / 2);
     const origPos = displayToOriginal(centerDisplayX, centerDisplayY);
 
     dev.x = origPos.x;
@@ -682,6 +678,19 @@ const image = document.getElementById("floorImage");
 const overlay = document.getElementById("overlay");
 const nodesLayer = document.getElementById("nodesLayer");
 
+document.getElementById("canvasBox").addEventListener("dragover", event => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+});
+
+document.getElementById("canvasBox").addEventListener("drop", event => {
+    event.preventDefault();
+    const deviceId = event.dataTransfer.getData("text/device-id");
+    if (!deviceId) return;
+    const rect = nodesLayer.getBoundingClientRect();
+    placeUnplacedDevice(deviceId, event.clientX - rect.left, event.clientY - rect.top);
+});
+
 function iconFor(type){
     if(type === "environment") return "🌡";
     if(type === "occupancy") return "👤";
@@ -691,9 +700,8 @@ function iconFor(type){
 }
 
 function originalToDisplay(p){
-    const s = siteData?.site || siteData;
-    const origWidth = (currentViewMode === "site" && siteData) ? (s?.image_width || siteData?.image_width || 1200) : (floorData?.floor?.image_width || 1000);
-    const origHeight = (currentViewMode === "site" && siteData) ? (s?.image_height || siteData?.image_height || 800) : (floorData?.floor?.image_height || 800);
+    const origWidth = floorData?.floor?.image_width || 1000;
+    const origHeight = floorData?.floor?.image_height || 800;
     return {
         x: p.x * image.clientWidth / origWidth,
         y: p.y * image.clientHeight / origHeight
@@ -701,225 +709,24 @@ function originalToDisplay(p){
 }
 
 function displayToOriginal(x, y){
-    const s = siteData?.site || siteData;
-    const origWidth = (currentViewMode === "site" && siteData) ? (s?.image_width || siteData?.image_width || 1200) : (floorData?.floor?.image_width || 1000);
-    const origHeight = (currentViewMode === "site" && siteData) ? (s?.image_height || siteData?.image_height || 800) : (floorData?.floor?.image_height || 800);
+    const origWidth = floorData?.floor?.image_width || 1000;
+    const origHeight = floorData?.floor?.image_height || 800;
     return {
         x: Math.round(x * origWidth / image.clientWidth),
         y: Math.round(y * origHeight / image.clientHeight)
     };
 }
 
-function toggleViewMode() {
-    currentViewMode = document.getElementById("viewModeSelect").value;
-    const floorGroup = document.getElementById("floorControlGroup");
-    const siteGroup = document.getElementById("siteControlGroup");
-    const roomSection = document.getElementById("roomAssignmentSection");
-    const resetBtn = document.getElementById("resetPositionBtn");
-    const modeHint = document.getElementById("modeHint");
-
-    if (currentViewMode === "site") {
-        floorGroup.style.display = "none";
-        siteGroup.style.display = "inline";
-        roomSection.style.display = "none";
-        if (resetBtn) resetBtn.style.display = "none";
-        modeHint.innerText = "Drag device on the site map photo, then press Save Current Position.";
-        loadSiteDropdown();
-    } else {
-        floorGroup.style.display = "inline";
-        siteGroup.style.display = "none";
-        roomSection.style.display = "block";
-        if (resetBtn) resetBtn.style.display = "block";
-        modeHint.innerText = "Drag node on the floor map, then press Save Current Position.";
-        loadFloor();
-    }
-}
-
-async function loadSiteDropdown() {
-    const select = document.getElementById("siteId");
-    try {
-        const res = await fetch("/sites");
-        const sites = await res.json();
-
-        select.innerHTML = `<option value="">Select site</option>`;
-        sites.forEach(s => {
-            select.innerHTML += `<option value="${s.id}">${s.name || "Site " + s.id}</option>`;
-        });
-
-        const params = new URLSearchParams(window.location.search);
-        const reqSiteId = params.get("site_id");
-
-        if (reqSiteId && sites.some(s => String(s.id) === String(reqSiteId))) {
-            select.value = reqSiteId;
-        } else if (sites.length > 0) {
-            select.value = sites[0].id;
-        }
-
-        if (select.value) {
-            await loadSiteMap();
-        }
-    } catch (e) {
-        console.error("Could not load sites", e);
-    }
-}
-
-async function loadSiteMap() {
-    const siteId = document.getElementById("siteId").value;
-    if (!siteId) return;
-
-    selectedDevice = null;
-    selectedNodeEl = null;
-    dragDevice = null;
-
-    document.getElementById("selectedDeviceName").value = "";
-    document.getElementById("deviceList").innerHTML = "";
-    nodesLayer.innerHTML = "";
-    overlay.innerHTML = "";
-
-    try {
-        const mapRes = await fetch(`/sites/${siteId}/map`);
-        siteData = await mapRes.json();
-
-        const devRes = await fetch(`/sites/${siteId}/devices`);
-        siteDevices = await devRes.json();
-
-        const imagePath = siteData.campus_image_path || siteData.image_path || siteData.site?.campus_image_path || siteData.site?.image_path;
-        if (!imagePath) {
-            alert("No site map photo has been uploaded for this site yet.");
-            return;
-        }
-
-        image.src = imagePath;
-
-        image.onload = function() {
-            overlay.setAttribute("width", image.clientWidth);
-            overlay.setAttribute("height", image.clientHeight);
-            drawSiteBuildings();
-            drawSiteNodes();
-            renderSiteDeviceList();
-        };
-
-        if (image.complete) {
-            drawSiteBuildings();
-            drawSiteNodes();
-            renderSiteDeviceList();
-        }
-    } catch (err) {
-        alert("Error loading site map: " + err.message);
-    }
-}
-
-function drawSiteBuildings() {
-    overlay.innerHTML = "";
-    if (!siteData || !siteData.buildings) return;
-
-    siteData.buildings.forEach(b => {
-        if (!b.polygon_points || b.polygon_points.length < 3) return;
-
-        const pts = b.polygon_points.map(originalToDisplay);
-        const poly = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-        poly.setAttribute("points", pts.map(p => `${p.x},${p.y}`).join(" "));
-        poly.setAttribute("class", "roomPolygon");
-        overlay.appendChild(poly);
-
-        if (b.center_x && b.center_y) {
-            const center = originalToDisplay({x: b.center_x, y: b.center_y});
-            const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-            label.setAttribute("x", center.x);
-            label.setAttribute("y", center.y);
-            label.setAttribute("class", "roomLabel");
-            label.textContent = b.name;
-            overlay.appendChild(label);
-        }
-    });
-}
-
-function drawSiteNodes() {
-    nodesLayer.innerHTML = "";
-    siteDevices.forEach(device => {
-        const node = document.createElement("div");
-
-        const px = device.x || 100;
-        const py = device.y || 100;
-        const pos = originalToDisplay({x: px, y: py});
-
-        node.className = "node";
-        node.style.left = pos.x + "px";
-        node.style.top = pos.y + "px";
-        node.innerText = iconFor(device.node_type) + " " + (device.label || device.device_id);
-
-        node.onmousedown = function(e) {
-            e.preventDefault();
-            selectDevice(device, node);
-            dragging = true;
-            dragDevice = device;
-            node.style.cursor = "grabbing";
-        };
-
-        node.onclick = function(e) {
-            e.stopPropagation();
-            selectDevice(device, node);
-        };
-
-        nodesLayer.appendChild(node);
-    });
-}
-
-function renderSiteDeviceList() {
-    const list = document.getElementById("deviceList");
-    list.innerHTML = "";
-
-    siteDevices.forEach(device => {
-        const div = document.createElement("div");
-        div.className = "deviceItem" + (selectedDevice && selectedDevice.device_id === device.device_id ? " active" : "");
-        div.innerText = iconFor(device.node_type) + " " + (device.label || device.device_id);
-
-        div.onclick = function() {
-            selectedDevice = device;
-            document.getElementById("selectedDeviceName").value = device.label || device.device_id;
-            renderSiteDeviceList();
-        };
-
-        list.appendChild(div);
-    });
-}
-
 async function openAddDeviceModal() {
     const modal = document.getElementById("addDeviceModal");
     const status = document.getElementById("modalStatus");
-    const siteSelect = document.getElementById("modalSiteSelect");
-    const bldSelect = document.getElementById("modalBuildingSelect");
     
     status.innerText = "";
     modal.style.display = "flex";
 
-    try {
-        const sitesRes = await fetch("/sites");
-        if (sitesRes.ok) {
-            const siteList = await sitesRes.json();
-            siteSelect.innerHTML = `<option value="">Select site</option>`;
-            siteList.forEach(s => {
-                siteSelect.innerHTML += `<option value="${s.id}">${s.name || "Site " + s.id}</option>`;
-            });
-
-            const activeSiteId = document.getElementById("siteId")?.value;
-            if (activeSiteId) siteSelect.value = activeSiteId;
-        }
-
-        const res = await fetch("/buildings");
-        if (res.ok) {
-            allBuildings = await res.json();
-            bldSelect.innerHTML = `<option value="">Select building (Optional)</option>`;
-            allBuildings.forEach(b => {
-                bldSelect.innerHTML += `<option value="${b.id}">${b.name}</option>`;
-            });
-
-            if (floorData?.floor?.building_id) {
-                bldSelect.value = floorData.floor.building_id;
-            }
-        }
-    } catch (e) {
-        console.error("Could not load sites/buildings for modal", e);
+    if (!document.getElementById("floorId")?.value) {
+        status.style.color = "#fecaca";
+        status.innerText = "Select a floor before creating a device.";
     }
 }
 
@@ -931,9 +738,8 @@ async function submitModalAddDevice() {
     const device_id = document.getElementById("modalDeviceId").value.trim();
     const label = document.getElementById("modalDeviceLabel").value.trim();
     const node_type = document.getElementById("modalNodeType").value;
-    const siteVal = document.getElementById("modalSiteSelect").value;
-    const bldVal = document.getElementById("modalBuildingSelect").value;
     const status = document.getElementById("modalStatus");
+    const floorId = document.getElementById("floorId")?.value;
 
     if (!device_id) {
         status.style.color = "#fecaca";
@@ -941,32 +747,18 @@ async function submitModalAddDevice() {
         return;
     }
 
+    if (!floorId) {
+        status.style.color = "#fecaca";
+        status.innerText = "Please select a floor.";
+        return;
+    }
+
     const payload = {
         device_id: device_id,
         label: label || device_id,
-        node_type: node_type
+        node_type: node_type,
+        floor_id: Number(floorId)
     };
-
-    if (bldVal) {
-        payload.building_id = Number(bldVal);
-    }
-    if (siteVal) {
-        payload.site_id = Number(siteVal);
-    }
-
-    if (currentViewMode === "site") {
-        const mainSiteId = document.getElementById("siteId")?.value;
-        if (!payload.site_id && mainSiteId) payload.site_id = Number(mainSiteId);
-    } else {
-        const mainFloorId = document.getElementById("floorId")?.value;
-        if (!payload.building_id && mainFloorId) payload.floor_id = Number(mainFloorId);
-    }
-
-    if (!payload.building_id && !payload.floor_id && !payload.site_id) {
-        status.style.color = "#fecaca";
-        status.innerText = "Please select a Target Site or Target Building.";
-        return;
-    }
 
     try {
         status.style.color = "#93c5fd";
@@ -991,11 +783,7 @@ async function submitModalAddDevice() {
             document.getElementById("modalDeviceId").value = "";
             document.getElementById("modalDeviceLabel").value = "";
 
-            if (currentViewMode === "site") {
-                await loadSiteMap();
-            } else {
-                await loadFloor();
-            }
+            await loadFloor();
         }, 500);
 
     } catch (err) {
@@ -1024,6 +812,14 @@ async function loadFloor(){
     const res = await fetch(`/floors/${floorId}/live`);
     floorData = await res.json();
 
+    const floor = floorData.floor || {};
+    document.getElementById("floorBreadcrumb").innerText = [
+        floor.client_name,
+        floor.site_name,
+        floor.building_name,
+        floor.name || floor.floor_number,
+    ].filter(Boolean).join(" → ");
+
     if (!floorData.floor || !floorData.floor.image_path) {
         alert("No floor plan image has been uploaded for this floor yet.");
         return;
@@ -1051,9 +847,14 @@ async function loadFloor(){
 
 function allDevices(){
     let devices = [];
-    if (!floorData || !floorData.rooms) return devices;
+    if (!floorData) return devices;
 
-    floorData.rooms.forEach(room => {
+    (floorData.floor_devices || []).forEach(device => {
+        device._room = null;
+        devices.push(device);
+    });
+
+    (floorData.rooms || []).forEach(room => {
         room.devices.forEach(device => {
             device._room = room;
             devices.push(device);
@@ -1096,8 +897,9 @@ function drawNodes(){
 
         const room = device._room;
 
-        const px = device.x || room.x;
-        const py = device.y || room.y;
+        const px = device.x ?? room?.x;
+        const py = device.y ?? room?.y;
+        if (px === null || px === undefined || py === null || py === undefined) return;
 
         const pos = originalToDisplay({x:px, y:py});
 
@@ -1167,13 +969,8 @@ function selectDevice(device, nodeEl){
     document.getElementById("selectedDeviceName").value =
         device.label || device.device_id;
 
-    if (currentViewMode === "floor") {
-        document.getElementById("roomSelect").value =
-            device.room_id || "";
-        renderDeviceList();
-    } else {
-        renderSiteDeviceList();
-    }
+    document.getElementById("roomSelect").value = device.room_id || "";
+    renderDeviceList();
 }
 
 function renderDeviceList(){
@@ -1205,7 +1002,7 @@ function renderDeviceList(){
 
 function renderRoomSelect(){
     const select = document.getElementById("roomSelect");
-    select.innerHTML = "";
+    select.innerHTML = '<option value="">Floor only (no room)</option>';
     if (!floorData || !floorData.rooms) return;
 
     floorData.rooms.forEach(room => {
@@ -1227,15 +1024,14 @@ async function savePosition(){
         y: selectedDevice.y
     };
 
-    if (currentViewMode === "floor") {
-        const floorId = document.getElementById("floorId")?.value;
-        if (floorId) payload.floor_id = Number(floorId);
-        const roomId = document.getElementById("roomSelect")?.value;
-        if (roomId) payload.room_id = Number(roomId);
-    } else {
-        const siteId = document.getElementById("siteId")?.value;
-        if (siteId) payload.site_id = Number(siteId);
+    const floorId = document.getElementById("floorId")?.value;
+    if (!floorId) {
+        alert("Select a floor first");
+        return;
     }
+    payload.floor_id = Number(floorId);
+    const roomId = document.getElementById("roomSelect")?.value;
+    if (roomId) payload.room_id = Number(roomId);
 
     const res = await fetch(`/devices/${selectedDevice.device_id}/position`, {
         method:"PUT",
@@ -1256,11 +1052,7 @@ async function savePosition(){
 
     await loadUnplacedDevices();
 
-    if (currentViewMode === "site") {
-        await loadSiteMap();
-    } else {
-        await loadFloor();
-    }
+    await loadFloor();
 }
 
 function getRoomById(roomId){
@@ -1308,7 +1100,12 @@ async function loadFloorDropdown() {
         select.innerHTML = `<option value="">Select floor</option>`;
 
         floors.forEach(floor => {
-            const label = `${floor.name || "Floor"} / Building ID ${floor.building_id} / ID ${floor.id}`;
+            const label = [
+                floor.client_name,
+                floor.site_name,
+                floor.building_name,
+                floor.name || `Floor ${floor.floor_number}`,
+            ].filter(Boolean).join(" → ");
 
             select.innerHTML += `
                 <option value="${floor.id}">
@@ -1338,6 +1135,15 @@ async function loadFloorDropdown() {
     }
 }
 
+function filterFloorOptions() {
+    const search = document.getElementById("floorSearch").value.trim().toLowerCase();
+    const select = document.getElementById("floorId");
+    Array.from(select.options).forEach((option, index) => {
+        if (index === 0) return;
+        option.hidden = Boolean(search) && !option.textContent.toLowerCase().includes(search);
+    });
+}
+
 document.addEventListener("DOMContentLoaded", function() {
     loadFloorDropdown();
     loadUnplacedDevices();
@@ -1355,8 +1161,8 @@ document.addEventListener("DOMContentLoaded", function() {
 
 <!-- Chart.js & Graphs System -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="/static/graphs.js"></script>
-<script src="/static/generate_firmware.js"></script>
+<script src="/static/graphs.js?v=3"></script>
+<script src="/static/generate_firmware.js?v=3"></script>
 <script>
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

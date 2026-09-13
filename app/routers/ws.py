@@ -15,10 +15,11 @@ router = APIRouter()
 WS_POLICY_VIOLATION = 1008
 
 
-def resolve_allowed_client_ids(conn, user_id: int) -> set[int]:
+def resolve_allowed_scopes(conn, user_id: int) -> list[dict[str, int | None]]:
     """
-    Every client a user can see, resolved upward from whatever level their
-    grants were issued at (client, site, building or floor).
+    Resolve each grant to its complete canonical ancestry. Keeping the narrow
+    level is essential: a floor grant must not become a client-wide alarm
+    subscription merely because that floor belongs to the client.
     """
     rows = conn.execute(
         """
@@ -27,7 +28,10 @@ def resolve_allowed_client_ids(conn, user_id: int) -> set[int]:
             s.client_id,
             s2.client_id,
             s3.client_id
-        ) AS client_id
+        ) AS client_id,
+        COALESCE(ua.site_id, b.site_id, b2.site_id) AS site_id,
+        COALESCE(ua.building_id, f.building_id) AS building_id,
+        ua.floor_id AS floor_id
         FROM user_access ua
         LEFT JOIN sites     s  ON s.id  = ua.site_id
         LEFT JOIN buildings b  ON b.id  = ua.building_id
@@ -40,7 +44,25 @@ def resolve_allowed_client_ids(conn, user_id: int) -> set[int]:
         (user_id,),
     ).fetchall()
 
-    return {row["client_id"] for row in rows if row["client_id"] is not None}
+    return [
+        {
+            "client_id": row["client_id"],
+            "site_id": row["site_id"],
+            "building_id": row["building_id"],
+            "floor_id": row["floor_id"],
+        }
+        for row in rows
+        if row["client_id"] is not None
+    ]
+
+
+def resolve_allowed_client_ids(conn, user_id: int) -> set[int]:
+    """Compatibility helper for callers that only need the tenant ids."""
+    return {
+        scope["client_id"]
+        for scope in resolve_allowed_scopes(conn, user_id)
+        if scope["client_id"] is not None
+    }
 
 
 @router.websocket("/ws/alarms")
@@ -64,10 +86,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
     if role == "admin":
         allowed_client_ids: set[int] = set()
+        allowed_scopes: list[dict[str, int | None]] = []
     elif role == "client":
         conn = db()
         try:
-            allowed_client_ids = resolve_allowed_client_ids(conn, user["id"])
+            allowed_scopes = resolve_allowed_scopes(conn, user["id"])
+            allowed_client_ids = {
+                scope["client_id"]
+                for scope in allowed_scopes
+                if scope["client_id"] is not None
+            }
         finally:
             conn.close()
 
@@ -83,6 +111,7 @@ async def websocket_endpoint(websocket: WebSocket):
         websocket,
         role=role,
         allowed_client_ids=allowed_client_ids,
+        allowed_scopes=allowed_scopes,
         user_id=user["id"],
     )
 

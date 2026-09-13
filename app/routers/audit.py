@@ -1,4 +1,3 @@
-import csv
 import io
 import json
 from datetime import datetime
@@ -8,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.db.connection import get_db_connection as db
 from app.main import build_audit_message
+from app.services.export_safety import SafeDictWriter, redact_secrets
 
 router = APIRouter()
 
@@ -116,6 +116,7 @@ def get_audit_log(
                 item["details"] = json.loads(item["details"]) if item["details"] else {}
             except Exception:
                 item["details"] = {}
+            item["details"] = redact_secrets(item["details"])
 
             if not item.get("message"):
                 item["message"] = build_audit_message(
@@ -250,7 +251,7 @@ def export_audit_log_csv(
             "details"
         ]
 
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = SafeDictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
 
         for row in rows:
@@ -258,24 +259,21 @@ def export_audit_log_csv(
 
             try:
                 details_obj = json.loads(item["details"]) if item.get("details") else {}
+                details_obj = redact_secrets(details_obj)
                 details_text = json.dumps(details_obj, ensure_ascii=False)
             except Exception:
+                details_obj = {}
                 details_text = item.get("details") or ""
 
             message = item.get("message")
 
             if not message:
-                try:
-                    details_for_message = json.loads(item["details"]) if item.get("details") else {}
-                except Exception:
-                    details_for_message = {}
-
                 message = build_audit_message(
                     action=item.get("action"),
                     actor=item.get("actor"),
                     target_type=item.get("target_type"),
                     target_id=item.get("target_id"),
-                    details=details_for_message
+                    details=details_obj
                 )
 
             writer.writerow({

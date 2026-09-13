@@ -4,6 +4,7 @@ import sqlite3
 
 from fastapi import HTTPException
 
+from app.config import settings
 from app.db.connection import get_db_connection
 from app.schemas.core import Device
 
@@ -194,8 +195,7 @@ def build_profile_provision_response(status: str, device_row: sqlite3.Row, profi
 def provision(device: Device) -> dict:
     from app.main import (
         JOIN_EUI,
-        generate_app_key,
-        generate_unique_dev_eui,
+        LORAWAN_APP_KEY,
         get_auto_room_position,
         get_existing_device,
         make_device_id,
@@ -211,6 +211,7 @@ def provision(device: Device) -> dict:
         update_existing_device_metadata,
         validate_config,
     )
+    from app.services.lorawan_identity import derive_dev_eui_from_mac
 
     try:
         validate_config()
@@ -252,6 +253,17 @@ def provision(device: Device) -> dict:
         existing = get_existing_device(conn, chip_mac)
 
         if existing:
+            shared_dev_eui = derive_dev_eui_from_mac(
+                chip_mac, namespace=settings.TTN_APP_ID
+            )
+            conn.execute(
+                """
+                UPDATE devices
+                SET dev_eui = ?, join_eui = ?, app_key = ?
+                WHERE chip_mac = ?
+                """,
+                (shared_dev_eui, join_eui, LORAWAN_APP_KEY, chip_mac),
+            )
             if device.x is not None and device.y is not None:
                 final_x, final_y = device.x, device.y
             else:
@@ -302,8 +314,8 @@ def provision(device: Device) -> dict:
 
         # Create new device
         device_id = make_device_id(chip_mac)
-        dev_eui = generate_unique_dev_eui(conn)
-        app_key = generate_app_key()
+        dev_eui = derive_dev_eui_from_mac(chip_mac, namespace=settings.TTN_APP_ID)
+        app_key = LORAWAN_APP_KEY
 
         if device.x is not None and device.y is not None:
             final_x, final_y = device.x, device.y

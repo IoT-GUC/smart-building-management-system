@@ -173,9 +173,8 @@ def test_get_route_does_not_500(
 
 ANONYMOUS_ALLOWED = {
     "/", "/login", "/admin-login", "/client-login", "/auth/status",
-    "/logout", "/me", "/service-worker.js", "/docs/oauth2-redirect",
-    # Called by LoRaWAN hardware and TTN, which have no browser session.
-    "/provision-options",
+    "/logout", "/me", "/service-worker.js", "/healthz",
+    "/docs/oauth2-redirect",
 }
 
 

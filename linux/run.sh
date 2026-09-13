@@ -46,4 +46,8 @@ echo "NOTE: Ensure your Linux firewall (ufw or iptables) allows traffic on port 
 echo "e.g. 'sudo ufw allow 8000'"
 echo ""
 
-"$PYTHON_CMD" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+if [ "${SBMS_RELOAD:-0}" = "1" ]; then
+    exec "$PYTHON_CMD" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+else
+    exec "$PYTHON_CMD" -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+fi

@@ -7,6 +7,7 @@ import re
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from app.config import settings
 from app.db.connection import get_db_connection as db
 from app.main import (
     UPLOAD_DIR,
@@ -24,6 +25,8 @@ from app.main import (
     read_tb_latest_telemetry,
     safe_unassign_gateways,
 )
+from app.services.device_state import build_device_state
+from app.services.export_safety import redact_secrets
 from app.services.uploads import save_image_securely
 
 router = APIRouter()
@@ -496,17 +499,27 @@ def get_floors(building_id: int | None = None):
 
         if building_id is not None:
             rows = conn.execute("""
-            SELECT *
-            FROM floors
-            WHERE building_id = ?
-            ORDER BY id DESC
+            SELECT f.*, b.name AS building_name,
+                   s.id AS site_id, s.name AS site_name,
+                   c.id AS client_id, c.name AS client_name
+            FROM floors f
+            JOIN buildings b ON b.id = f.building_id
+            JOIN sites s ON s.id = b.site_id
+            JOIN clients c ON c.id = s.client_id
+            WHERE f.building_id = ?
+            ORDER BY c.name, s.name, b.name, f.floor_number, f.name
         """, (building_id,)).fetchall()
 
         else:
             rows = conn.execute("""
-            SELECT *
-            FROM floors
-            ORDER BY id DESC
+            SELECT f.*, b.name AS building_name,
+                   s.id AS site_id, s.name AS site_name,
+                   c.id AS client_id, c.name AS client_name
+            FROM floors f
+            JOIN buildings b ON b.id = f.building_id
+            JOIN sites s ON s.id = b.site_id
+            JOIN clients c ON c.id = s.client_id
+            ORDER BY c.name, s.name, b.name, f.floor_number, f.name
         """).fetchall()
 
         conn.close()
@@ -556,7 +569,8 @@ def delete_site(site_id: int):
 
         conn.execute("""
         UPDATE devices
-        SET site_id = NULL,
+        SET is_placed = 0,
+            site_id = NULL,
             building_id = NULL,
             floor_id = NULL,
             room_id = NULL,
@@ -669,7 +683,8 @@ def delete_building(building_id: int):
 
         conn.execute("""
         UPDATE devices
-        SET building_id = NULL,
+        SET is_placed = 0,
+            building_id = NULL,
             floor_id = NULL,
             room_id = NULL,
             building = NULL,
@@ -769,7 +784,8 @@ def delete_floor(floor_id: int):
 
         conn.execute("""
         UPDATE devices
-        SET floor_id = NULL,
+        SET is_placed = 0,
+            floor_id = NULL,
             room_id = NULL,
             floor = NULL,
             room = NULL,
@@ -1515,7 +1531,7 @@ def get_floor_details(floor_id: int):
         """, (room["id"],)).fetchall()
 
             room_obj["devices"] = [
-                dict(d)
+                redact_secrets(dict(d))
                 for d in devices
             ]
 
@@ -1526,8 +1542,85 @@ def get_floor_details(floor_id: int):
         return result
     finally:
         conn.close()
+def _build_floor_live_device(conn, device_row, include_upstream: bool = False):
+    """Attach profile and telemetry metadata to a device shown on a floor."""
+    # The row is SELECT *, so it carries the LoRaWAN root key. Strip secrets
+    # before anything else can copy this dict into a response.
+    device = redact_secrets(dict(device_row))
+    device_id = device["device_id"]
+    profile = load_device_profile_for_live_telemetry(conn, device_id)
+    profile_metadata = build_profile_live_metadata(profile)
+
+    if profile_metadata:
+        capabilities = profile_metadata["capabilities"]
+    else:
+        try:
+            capabilities = get_device_capabilities_list(
+                conn,
+                device_id,
+                device.get("node_type"),
+            )
+        except Exception:
+            capabilities = [device.get("node_type")]
+    capabilities = [capability for capability in capabilities if capability]
+
+    tb_telemetry = {}
+    if include_upstream:
+        try:
+            tb_telemetry = read_tb_latest_telemetry(
+                device_id,
+                profile=profile,
+            ) or {}
+        except Exception as exc:
+            logger.info("ThingsBoard telemetry failed in floor live: %s", exc)
+
+    try:
+        local_telemetry = get_local_latest_telemetry(conn, device_id) or {}
+    except Exception as exc:
+        logger.info("Local telemetry failed in floor live: %s", exc)
+        local_telemetry = {}
+
+    telemetry = merge_profile_live_telemetry_sources(
+        tb_telemetry,
+        local_telemetry,
+    )
+    device.update(
+        {
+            "node_type": profile.get("node_type") if profile else device.get("node_type"),
+            "capabilities": capabilities,
+            "profile_assigned": bool(profile),
+            "profile": profile_metadata,
+            "profile_id": profile.get("id") if profile else device.get("profile_id"),
+            "profile_code": profile.get("profile_code") if profile else device.get("profile_code"),
+            "profile_version": profile.get("profile_version") if profile else device.get("profile_version"),
+            "payload_version": profile.get("payload_version") if profile else device.get("payload_version"),
+            "icon_type": (
+                profile.get("icon_type")
+                if profile and profile.get("icon_type")
+                else device.get("icon_type")
+            ),
+            "icon_color": profile.get("icon_color") if profile else None,
+            "telemetry": telemetry,
+            "telemetry_fields": build_profile_live_field_metadata(profile, surface="all"),
+            "display_telemetry": build_profile_display_telemetry(
+                profile,
+                telemetry,
+                surface="floor",
+            ),
+        }
+    )
+    device.update(
+        build_device_state(
+            device,
+            stale_after_seconds=settings.DEVICE_STALE_AFTER_SECONDS,
+            offline_after_seconds=settings.DEVICE_OFFLINE_AFTER_SECONDS,
+        )
+    )
+    return device
+
+
 @router.get("/floors/{floor_id}/live")
-def get_floor_live(floor_id: int):
+def get_floor_live(floor_id: int, include_upstream: bool = False):
     """
     Return one floor with rooms, gateways and profile-driven
     device telemetry for Floor Live View.
@@ -1544,10 +1637,18 @@ def get_floor_live(floor_id: int):
             """
             SELECT
                 f.*,
-                b.name AS building_name
+                b.name AS building_name,
+                s.id AS site_id,
+                s.name AS site_name,
+                c.id AS client_id,
+                c.name AS client_name
             FROM floors AS f
             LEFT JOIN buildings AS b
               ON b.id = f.building_id
+            LEFT JOIN sites AS s
+              ON s.id = b.site_id
+            LEFT JOIN clients AS c
+              ON c.id = s.client_id
             WHERE f.id = ?
             """,
             (floor_id,),
@@ -1588,6 +1689,7 @@ def get_floor_live(floor_id: int):
         result = {
             "floor": floor_dict,
             "rooms": [],
+            "floor_devices": [],
             "gateways": [],
         }
 
@@ -1654,9 +1756,11 @@ def get_floor_live(floor_id: int):
             # =================================================
 
             for device_row in devices:
-                device = dict(
+                # SELECT * carries the LoRaWAN root key; strip it before the
+                # dict is enriched and returned.
+                device = redact_secrets(dict(
                     device_row
-                )
+                ))
 
                 device_id = device[
                     "device_id"
@@ -1719,23 +1823,23 @@ def get_floor_live(floor_id: int):
                 # ThingsBoard telemetry
                 # ---------------------------------------------
 
-                try:
-                    tb_telemetry = (
-                        read_tb_latest_telemetry(
-                            device_id,
-                            profile=profile,
+                tb_telemetry = {}
+                if include_upstream:
+                    try:
+                        tb_telemetry = (
+                            read_tb_latest_telemetry(
+                                device_id,
+                                profile=profile,
+                            )
+                            or {}
                         )
-                        or {}
-                    )
 
-                except Exception as exc:
-                    logger.info(
-                        "ThingsBoard telemetry failed "
-                        "in floor live: %s",
-                        exc,
-                    )
-
-                    tb_telemetry = {}
+                    except Exception as exc:
+                        logger.info(
+                            "ThingsBoard telemetry failed "
+                            "in floor live: %s",
+                            exc,
+                        )
 
                 # ---------------------------------------------
                 # Local validated telemetry
@@ -1886,6 +1990,14 @@ def get_floor_live(floor_id: int):
                     "display_telemetry"
                 ] = floor_display_telemetry
 
+                device.update(
+                    build_device_state(
+                        device,
+                        stale_after_seconds=settings.DEVICE_STALE_AFTER_SECONDS,
+                        offline_after_seconds=settings.DEVICE_OFFLINE_AFTER_SECONDS,
+                    )
+                )
+
                 room_obj["devices"].append(
                     device
                 )
@@ -1893,6 +2005,20 @@ def get_floor_live(floor_id: int):
             result["rooms"].append(
                 room_obj
             )
+
+        floor_device_rows = conn.execute(
+            """
+            SELECT *
+            FROM devices
+            WHERE floor_id = ? AND room_id IS NULL
+            ORDER BY COALESCE(label, device_id), device_id
+            """,
+            (floor_id,),
+        ).fetchall()
+        result["floor_devices"] = [
+            _build_floor_live_device(conn, row, include_upstream)
+            for row in floor_device_rows
+        ]
 
         # =====================================================
         # 5. LOAD FLOOR GATEWAYS

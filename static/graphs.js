@@ -123,7 +123,7 @@ document.addEventListener("DOMContentLoaded", function () {
     // Global function to open graph modal
     window.openTelemetryGraph = async function(deviceId, deviceName) {
         backdrop.style.display = 'flex';
-        backdrop.querySelector('.sb-graph-title').innerText = \`\${deviceName} - History\`;
+        backdrop.querySelector('.sb-graph-title').innerText = `${deviceName} - History`;
         const controlsDiv = document.getElementById('sb-graph-controls');
         controlsDiv.innerHTML = '<span style="color:#94a3b8; font-size:14px;">Loading data...</span>';
         
@@ -133,7 +133,7 @@ document.addEventListener("DOMContentLoaded", function () {
         }
 
         try {
-            const response = await fetch(\`/api/devices/\${deviceId}/history\`);
+            const response = await fetch(`/api/devices/${deviceId}/history`);
             const data = await response.json();
             
             if (data.status !== 'success' || !data.history || data.history.length === 0) {
@@ -166,7 +166,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 controlsDiv.innerHTML = '';
                 availableMetrics.forEach(metric => {
                     const btn = document.createElement('button');
-                    btn.className = \`sb-graph-btn \${metric === activeMetric ? 'active' : ''}\`;
+            btn.className = `sb-graph-btn ${metric === activeMetric ? 'active' : ''}`;
                     btn.innerText = metric.toUpperCase();
                     btn.onclick = () => {
                         activeMetric = metric;
@@ -214,7 +214,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = \`telemetry_\${deviceId}_\${new Date().toISOString().split('T')[0]}.csv\`;
+        a.download = `telemetry_${deviceId}_${new Date().toISOString().split('T')[0]}.csv`;
                 a.click();
                 window.URL.revokeObjectURL(url);
             };

@@ -1,9 +1,13 @@
 import os
 
 from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
+from fastapi.templating import Jinja2Templates
+
+from app.db.connection import get_db_connection
 
 router = APIRouter()
+templates = Jinja2Templates(directory="templates")
 
 
 @router.get("/")
@@ -16,25 +20,29 @@ def root(request: Request):
             "service": "Smart Building Management Server",
         }
 
-    # Browser navigation & web testing: render app UI with 200 OK
+    # Browser navigation & web testing: render app UI with 200 OK. Template or
+    # database errors must remain visible instead of being disguised as health.
+    from app.main import get_current_user_from_request
+
+    user = get_current_user_from_request(request)
+    if user:
+        role = (user.get("role") or "").lower()
+        if role == "client":
+            return templates.TemplateResponse(request, "client_portal_page.html", {"user": user})
+        return templates.TemplateResponse(request, "admin_home_page.html", {})
+
+    return templates.TemplateResponse(request, "login_page.html", {})
+
+
+@router.get("/healthz", include_in_schema=False)
+def healthz():
+    """Readiness check that proves the application can reach its database."""
+    conn = get_db_connection()
     try:
-        from app.main import get_current_user_from_request
-        from fastapi.templating import Jinja2Templates
-        templates = Jinja2Templates(directory="templates")
-        
-        user = get_current_user_from_request(request)
-        if user:
-            role = (user.get("role") or "").lower()
-            if role == "client":
-                return templates.TemplateResponse(request, "client_portal_page.html", {"user": user})
-            return templates.TemplateResponse(request, "admin_home_page.html", {})
-        
-        return templates.TemplateResponse(request, "login_page.html", {})
-    except Exception:
-        return {
-            "status": "ok",
-            "service": "Smart Building Management Server",
-        }
+        conn.execute("SELECT 1").fetchone()
+    finally:
+        conn.close()
+    return {"status": "ok", "database": "ok"}
 
 
 @router.get("/service-worker.js", include_in_schema=False)

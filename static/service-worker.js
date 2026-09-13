@@ -1,18 +1,18 @@
-const CACHE_NAME = 'smartbms-cache-v2';
+const CACHE_NAME = 'smartbms-cache-v3';
 // These are served from the /static mount, not /uploads (which holds
 // uploaded floorplan images). Pointing at /uploads made every fetch 404, and
 // because cache.addAll() rejects as a whole on any failure, the service
 // worker never finished installing.
 const STATIC_ASSETS = [
   '/static/bright_theme.css',
-  '/static/graphs.js',
+  '/static/graphs.js?v=3',
   '/static/help_system.js',
   '/static/search_system.js',
   '/static/realtime_toasts.js',
   '/static/analytics_widget.js',
   '/static/bulk_import.js',
   '/static/onboarding_tour.js',
-  '/static/generate_firmware.js'
+  '/static/generate_firmware.js?v=3'
 ];
 
 self.addEventListener('install', event => {

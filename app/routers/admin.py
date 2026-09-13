@@ -2,7 +2,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-import csv
 import io
 import json
 from datetime import datetime, timezone
@@ -19,6 +18,7 @@ from app.main import (
     get_local_latest_telemetry,
     read_tb_latest_telemetry,
 )
+from app.services.export_safety import SafeDictWriter, redact_secrets
 
 router = APIRouter()
 
@@ -32,7 +32,7 @@ def admin_full_structure_export_csv():
 
         def clean_details(data):
             try:
-                return json.dumps(data, ensure_ascii=False, default=str)
+                return json.dumps(redact_secrets(data), ensure_ascii=False, default=str)
             except Exception:
                 return str(data)
 
@@ -92,7 +92,7 @@ def admin_full_structure_export_csv():
             "details"
         ]
 
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = SafeDictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
 
         def write_row(
@@ -340,25 +340,11 @@ def admin_device_inventory_export_csv():
 
             return ""
 
-        def safe_details(data):
-            safe_data = dict(data or {})
-
-            secret_keys = [
-                "app_key",
-                "api_key",
-                "password",
-                "token",
-                "secret"
-            ]
-
-            for key in list(safe_data.keys()):
-                if key.lower() in secret_keys:
-                    safe_data[key] = "***hidden***"
-
+        def clean_details(data):
             try:
-                return json.dumps(safe_data, ensure_ascii=False, default=str)
+                return json.dumps(redact_secrets(data or {}), ensure_ascii=False, default=str)
             except Exception:
-                return str(safe_data)
+                return str(data)
 
         def parse_json_maybe(value):
             if value is None:
@@ -634,7 +620,7 @@ def admin_device_inventory_export_csv():
             "details"
         ]
 
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer = SafeDictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
 
         for device in devices:
@@ -747,7 +733,7 @@ def admin_device_inventory_export_csv():
 
                 "latest_telemetry_source": telemetry.get("latest_telemetry_source", "none"),
                 "telemetry_json": json.dumps(telemetry, ensure_ascii=False, default=str),
-                "details": safe_details(device)
+                "details": clean_details(device)
             })
 
         conn.close()

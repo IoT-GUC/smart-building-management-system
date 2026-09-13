@@ -35,7 +35,8 @@ def test_auth_session_revoked_on_disable(client: TestClient, db_conn: sqlite3.Co
     assert sess["revoked_at"] is None
 
     # Disable user
-    res = client.post(f"/users/{user_id}/disable", cookies={"sbms_session": admin_token})
+    client.cookies.set("sbms_session", admin_token)
+    res = client.post(f"/users/{user_id}/disable")
     assert res.status_code == 200, res.text
 
     # Verify session is revoked
@@ -72,10 +73,10 @@ def test_auth_session_revoked_on_credentials_update(client: TestClient, db_conn:
     raw_admin_token = create_login_session(db_conn, admin_id)
 
     # Admin updates client credentials (new password)
+    client.cookies.set("sbms_session", raw_admin_token)
     res = client.put(
         f"/users/{user_id}/credentials",
         json={"password": "NewSecretPassword123!"},
-        cookies={"sbms_session": raw_admin_token}
     )
     assert res.status_code == 200, res.text
 

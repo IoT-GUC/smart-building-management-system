@@ -598,6 +598,87 @@ def delete_user(user_id: int):
         raise
     finally:
         conn.close()
+def normalize_user_access_scope(
+    conn,
+    client_id,
+    site_id,
+    building_id,
+    floor_id,
+):
+    """Resolve one access scope to a consistent hierarchy ancestry."""
+    if floor_id:
+        row = conn.execute(
+            """
+            SELECT f.id AS floor_id, b.id AS building_id,
+                   s.id AS site_id, c.id AS client_id
+            FROM floors f
+            JOIN buildings b ON b.id = f.building_id
+            JOIN sites s ON s.id = b.site_id
+            JOIN clients c ON c.id = s.client_id
+            WHERE f.id = ?
+            """,
+            (floor_id,),
+        ).fetchone()
+    elif building_id:
+        row = conn.execute(
+            """
+            SELECT NULL AS floor_id, b.id AS building_id,
+                   s.id AS site_id, c.id AS client_id
+            FROM buildings b
+            JOIN sites s ON s.id = b.site_id
+            JOIN clients c ON c.id = s.client_id
+            WHERE b.id = ?
+            """,
+            (building_id,),
+        ).fetchone()
+    elif site_id:
+        row = conn.execute(
+            """
+            SELECT NULL AS floor_id, NULL AS building_id,
+                   s.id AS site_id, c.id AS client_id
+            FROM sites s
+            JOIN clients c ON c.id = s.client_id
+            WHERE s.id = ?
+            """,
+            (site_id,),
+        ).fetchone()
+    elif client_id:
+        row = conn.execute(
+            """
+            SELECT NULL AS floor_id, NULL AS building_id,
+                   NULL AS site_id, id AS client_id
+            FROM clients
+            WHERE id = ?
+            """,
+            (client_id,),
+        ).fetchone()
+    else:
+        raise HTTPException(status_code=400, detail="At least one access scope is required")
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Access scope not found")
+
+    resolved = dict(row)
+    supplied = {
+        "client_id": client_id,
+        "site_id": site_id,
+        "building_id": building_id,
+        "floor_id": floor_id,
+    }
+    for key, value in supplied.items():
+        if value is not None and value != resolved[key]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key} does not belong to the selected access scope",
+            )
+    return (
+        resolved["client_id"],
+        resolved["site_id"],
+        resolved["building_id"],
+        resolved["floor_id"],
+    )
+
+
 @router.post("/user-access")
 def create_user_access(data: dict):
     user_id = data.get("user_id")
@@ -635,6 +716,14 @@ def create_user_access(data: dict):
         if not user:
             conn.close()
             raise HTTPException(status_code=404, detail="User not found")
+
+        client_id, site_id, building_id, floor_id = normalize_user_access_scope(
+            conn,
+            client_id,
+            site_id,
+            building_id,
+            floor_id,
+        )
 
         existing = conn.execute("""
         SELECT *
@@ -798,6 +887,14 @@ def update_user_access(access_id: int, data: dict):
         site_id = data.get("site_id", row["site_id"])
         building_id = data.get("building_id", row["building_id"])
         floor_id = data.get("floor_id", row["floor_id"])
+
+        client_id, site_id, building_id, floor_id = normalize_user_access_scope(
+            conn,
+            client_id,
+            site_id,
+            building_id,
+            floor_id,
+        )
 
         access_level = data.get("access_level", row["access_level"])
 
@@ -977,7 +1074,8 @@ def delete_client(client_id: int):
 
         conn.execute("""
         UPDATE devices
-        SET client_id = NULL,
+        SET is_placed = 0,
+            client_id = NULL,
             site_id = NULL,
             building_id = NULL,
             floor_id = NULL,

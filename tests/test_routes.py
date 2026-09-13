@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -38,3 +40,26 @@ def test_service_worker_route_exists(client: TestClient):
     response = client.get("/service-worker.js")
     assert response.status_code == 200
     assert "javascript" in response.headers.get("content-type", "").lower()
+
+
+def test_healthz_checks_database_and_is_public(client: TestClient):
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "database": "ok"}
+
+
+def test_security_headers_are_present(client: TestClient):
+    response = client.get("/")
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+
+
+def test_node_placement_ui_is_floor_only():
+    html = Path("templates/node_placement_editor.html").read_text(encoding="utf-8")
+
+    assert "Site / Campus Photo View" not in html
+    assert 'id="modalSiteSelect"' not in html
+    assert 'id="modalBuildingSelect"' not in html

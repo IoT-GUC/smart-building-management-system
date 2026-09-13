@@ -1,6 +1,13 @@
 import logging
 from typing import Any
 
+import truststore
+
+# Use the operating system CA store so managed Windows installations and
+# ordinary Linux containers validate TTN TLS through their native trust roots.
+# Verification remains enabled; this does not use verify=False.
+truststore.inject_into_ssl()
+
 import requests
 
 from app.config import settings
@@ -52,9 +59,9 @@ class TTNClient:
                 },
                 "name": name,
                 "description": description,
-                "lorawan_version": "MAC_V1_0_3",
-                "lorawan_phy_version": "PHY_V1_0_3_REV_A",
-                "frequency_plan_id": "EU_863_870_TTN",
+                "lorawan_version": settings.LORAWAN_VERSION,
+                "lorawan_phy_version": settings.LORAWAN_PHY_VERSION,
+                "frequency_plan_id": settings.LORAWAN_FREQUENCY_PLAN_ID,
                 "supports_join": True,
             },
             "field_mask": {
@@ -123,9 +130,9 @@ class TTNClient:
                     "dev_eui": dev_eui,
                     "join_eui": join_eui,
                 },
-                "lorawan_version": "MAC_V1_0_3",
-                "lorawan_phy_version": "PHY_V1_0_3_REV_A",
-                "frequency_plan_id": "EU_863_870_TTN",
+                "lorawan_version": settings.LORAWAN_VERSION,
+                "lorawan_phy_version": settings.LORAWAN_PHY_VERSION,
+                "frequency_plan_id": settings.LORAWAN_FREQUENCY_PLAN_ID,
                 "supports_join": True,
             },
             "field_mask": {
@@ -193,15 +200,26 @@ function decodeUplink(input) {
         )
 
     def delete_device(self, device_id: str) -> None:
-        try:
-            self._request(
-                "DELETE",
-                f"/api/v3/applications/{self.app_id}/devices/{device_id}",
-            )
-        except requests.HTTPError as e:
-            if e.response.status_code == 404:
-                return
-            raise
+        paths = (
+            f"/api/v3/as/applications/{self.app_id}/devices/{device_id}",
+            f"/api/v3/ns/applications/{self.app_id}/devices/{device_id}",
+            f"/api/v3/js/applications/{self.app_id}/devices/{device_id}",
+            f"/api/v3/applications/{self.app_id}/devices/{device_id}",
+        )
+        for path in paths:
+            try:
+                self._request("DELETE", path)
+            except requests.HTTPError as error:
+                if error.response is not None and error.response.status_code == 404:
+                    continue
+                raise
+
+    def get_application_device(self, device_id: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/api/v3/applications/{self.app_id}/devices/{device_id}",
+            params={"field_mask": "ids,name,created_at,updated_at"},
+        ).json()
 
     def get_gateway_info(self, gateway_id: str) -> dict[str, Any]:
         return self._request(

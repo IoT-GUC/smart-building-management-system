@@ -21,6 +21,34 @@ def test_missing_dependency_fixed():
     assert "pydantic-settings" in (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
 
 
+def test_runtime_dependencies_are_pinned():
+    lines = [
+        line.strip()
+        for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert lines
+    assert all("==" in line for line in lines)
+
+
+def test_firmware_uses_generated_shared_credentials():
+    firmware = (ROOT / "firmware/lilygo_cayenne_lpp_node.ino").read_text(
+        encoding="utf-8"
+    )
+    assert '#include "lorawan_credentials.h"' in firmware
+    assert "SBMS_DEV_EUI_XOR_LSB_BYTES" in firmware
+    assert "derive_dev_eui_from_mac" in (
+        ROOT / "app/services/lorawan_identity.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_operational_run_scripts_do_not_force_reload():
+    windows = (ROOT / "windows/run.bat").read_text(encoding="utf-8")
+    linux = (ROOT / "linux/run.sh").read_text(encoding="utf-8")
+    assert '"%SBMS_RELOAD%"=="1"' in windows
+    assert '"${SBMS_RELOAD:-0}" = "1"' in linux
+
+
 def test_debug_route_removed():
     text = "".join([p.read_text(encoding="utf-8") for p in (ROOT / "app/routers").glob("*.py")])
     assert '@router.get("/test-token-refresh")' not in text

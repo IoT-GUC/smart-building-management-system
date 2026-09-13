@@ -385,15 +385,23 @@ function drawRooms(){
 }
 
 
+function allFloorDevices(){
+    const entries = (floorData.floor_devices || []).map(device => ({device, room: null}));
+    floorData.rooms.forEach(room => {
+        (room.devices || []).forEach(device => entries.push({device, room}));
+    });
+    return entries;
+}
+
 function drawNodes(){
     nodesLayer.innerHTML = "";
 
-    floorData.rooms.forEach(room => {
-        room.devices.forEach(device => {
+    allFloorDevices().forEach(({device, room}) => {
             const node = document.createElement("div");
 
-            const px = device.x || room.x;
-            const py = device.y || room.y;
+            const px = device.x ?? room?.x;
+            const py = device.y ?? room?.y;
+            if (px === null || px === undefined || py === null || py === undefined) return;
             const pos = originalToDisplay({x:px, y:py});
 
             node.className = "node " + (isAlarm(device) ? "node-red" : "node-green");
@@ -411,7 +419,6 @@ function drawNodes(){
             nodesLayer.appendChild(node);
 
             applyLatestTelemetryColor(node, device);
-        });
     });
 }
 
@@ -695,7 +702,7 @@ function buildStaticDeviceHtml(
         `<div class="infoRow">
             <b>Room:</b>
             ${escapeHtml(
-                room.room_name || "--"
+                room?.room_name || "Floor only"
             )}
         </div>` +
 
@@ -1106,8 +1113,7 @@ async function openPanel(
     selectedDeviceId =
         device.device_id;
 
-    selectedRoomId =
-        room.id;
+    selectedRoomId = room?.id || null;
 
     document.getElementById(
         "panelTitle"
@@ -1261,7 +1267,14 @@ function refreshOpenPanel(){
         });
     });
 
-    if(foundDevice && foundRoom){
+    (floorData.floor_devices || []).forEach(device => {
+        if(device.device_id === selectedDeviceId){
+            foundDevice = device;
+            foundRoom = null;
+        }
+    });
+
+    if(foundDevice){
         openPanel(foundDevice, foundRoom);
     }
 }

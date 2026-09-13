@@ -47,9 +47,9 @@ def floor_map_data(building: str, floor: str):
             r.room_name as room
         FROM devices d
         LEFT JOIN rooms r ON d.room_id = r.id
-        WHERE r.floor_id = ?
+        WHERE d.floor_id = ? OR (d.floor_id IS NULL AND r.floor_id = ?)
         ORDER BY r.room_name, d.label
-    """, (floor_id,)).fetchall()
+    """, (floor_id, floor_id)).fetchall()
 
         conn.close()
 
@@ -96,6 +96,7 @@ def floor_map_data(building: str, floor: str):
 @router.get("/api/analytics")
 def get_analytics():
     from datetime import datetime, timezone
+
     from app.main import parse_datetime_safe
 
     conn = db()

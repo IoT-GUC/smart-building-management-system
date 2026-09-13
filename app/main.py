@@ -32,6 +32,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.schemas.core import Device, ProfileAlarmTemplateValues
+from app.services.device_state import build_device_state
+from app.services.export_safety import redact_secrets
 from app.services.thingsboard import tb_client
 from app.services.ttn import ttn_client
 from app.services.websockets import manager
@@ -42,7 +44,13 @@ load_dotenv()
 MAIN_EVENT_LOOP = None
 
 
-def schedule_broadcast(message, client_id=None, site_id=None):
+def schedule_broadcast(
+    message,
+    client_id=None,
+    site_id=None,
+    building_id=None,
+    floor_id=None,
+):
     """
     Fire a websocket broadcast from either the event loop or a worker thread.
 
@@ -50,7 +58,13 @@ def schedule_broadcast(message, client_id=None, site_id=None):
     running loop to attach to, so the coroutine is handed back to the main
     loop instead.
     """
-    coro = manager.broadcast(message, client_id=client_id, site_id=site_id)
+    coro = manager.broadcast(
+        message,
+        client_id=client_id,
+        site_id=site_id,
+        building_id=building_id,
+        floor_id=floor_id,
+    )
     try:
         asyncio.get_running_loop().create_task(coro)
         return
@@ -102,13 +116,14 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 app.mount('/uploads', StaticFiles(directory=UPLOAD_DIR), name='uploads')
 if os.path.isdir('static'):
     app.mount('/static', StaticFiles(directory='static'), name='static')
-TTN_BASE = os.getenv('TTN_BASE_URL', '').rstrip('/')
-APP_ID = os.getenv('TTN_APP_ID', '')
-API_KEY = os.getenv('TTN_API_KEY', '')
-JOIN_EUI = os.getenv('JOIN_EUI', '0000000000000000').upper()
-FREQUENCY_PLAN_ID = os.getenv('LORAWAN_FREQUENCY_PLAN_ID', 'EU_863_870_TTN')
-LORAWAN_VERSION = os.getenv('LORAWAN_VERSION', 'MAC_V1_0_2')
-LORAWAN_PHY_VERSION = os.getenv('LORAWAN_PHY_VERSION', 'RP001_V1_0_2_REV_B')
+TTN_BASE = settings.TTN_BASE_URL.rstrip('/')
+APP_ID = settings.TTN_APP_ID
+API_KEY = settings.TTN_API_KEY
+JOIN_EUI = settings.JOIN_EUI.upper()
+LORAWAN_APP_KEY = settings.LORAWAN_APP_KEY.upper()
+FREQUENCY_PLAN_ID = settings.LORAWAN_FREQUENCY_PLAN_ID
+LORAWAN_VERSION = settings.LORAWAN_VERSION
+LORAWAN_PHY_VERSION = settings.LORAWAN_PHY_VERSION
 TTN_HOST = TTN_BASE.replace('https://', '').replace('http://', '')
 THINGSBOARD_URL = os.getenv('THINGSBOARD_URL', 'http://localhost:8080').rstrip(
     '/')
@@ -1882,1016 +1897,6 @@ def validate_provision_location_and_type(conn: sqlite3.Connection, device:
     return validate_provision_location_and_type(conn, device)
 
 
-def safe_add_column(conn, table, column_def):
-    try:
-        conn.execute(f'ALTER TABLE {table} ADD COLUMN {column_def}')
-    except Exception:
-        pass
-
-
-def ensure_profile_alarm_runtime_schema(conn: sqlite3.Connection):
-    """
-    Create persistent runtime state for profile-driven alarms and
-    extend alarm_history with structured rule information.
-    """
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS
-        profile_alarm_runtime_state(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            device_id TEXT NOT NULL,
-
-            profile_id INTEGER NOT NULL,
-            profile_code TEXT NOT NULL,
-            profile_version INTEGER NOT NULL,
-
-            rule_id INTEGER,
-            rule_code TEXT NOT NULL,
-
-            is_condition_active INTEGER
-                NOT NULL DEFAULT 0,
-
-            first_matched_at TEXT,
-            last_evaluated_at TEXT,
-            last_matched_at TEXT,
-            last_triggered_at TEXT,
-            last_cleared_at TEXT,
-
-            active_alarm_history_id INTEGER,
-
-            occurrence_count INTEGER
-                NOT NULL DEFAULT 0,
-
-            last_value_json TEXT,
-
-            created_at TEXT
-                NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            updated_at TEXT
-                NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            UNIQUE(
-                device_id,
-                rule_code
-            )
-        )
-        """
-        )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS
-        idx_profile_alarm_runtime_device
-        ON profile_alarm_runtime_state(
-            device_id
-        )
-        """
-        )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS
-        idx_profile_alarm_runtime_active
-        ON profile_alarm_runtime_state(
-            device_id,
-            is_condition_active
-        )
-        """
-        )
-    safe_add_column(conn, 'alarm_history', 'profile_id INTEGER')
-    safe_add_column(conn, 'alarm_history', 'profile_code TEXT')
-    safe_add_column(conn, 'alarm_history', 'profile_version INTEGER')
-    safe_add_column(conn, 'alarm_history', 'rule_id INTEGER')
-    safe_add_column(conn, 'alarm_history', 'rule_code TEXT')
-    safe_add_column(conn, 'alarm_history', 'severity TEXT')
-    safe_add_column(conn, 'alarm_history', 'field_key TEXT')
-    safe_add_column(conn, 'alarm_history', 'actual_value_json TEXT')
-    safe_add_column(conn, 'alarm_history', 'operator TEXT')
-    safe_add_column(conn, 'alarm_history', 'threshold_value REAL')
-    safe_add_column(conn, 'alarm_history', 'threshold_value_2 REAL')
-    safe_add_column(conn, 'alarm_history', 'expected_boolean INTEGER')
-    safe_add_column(conn, 'alarm_history', 'expected_text TEXT')
-    safe_add_column(conn, 'alarm_history', "source TEXT DEFAULT 'legacy'")
-    safe_add_column(conn, 'alarm_history', 'auto_resolved INTEGER DEFAULT 0')
-    safe_add_column(conn, 'alarm_history', 'resolved_reason TEXT')
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS
-        idx_alarm_history_profile_rule
-        ON alarm_history(
-            device_id,
-            profile_code,
-            rule_code
-        )
-        """
-        )
-
-
-def ensure_sensor_profile_schema(conn: sqlite3.Connection):
-    """
-    Create the profile-driven sensor architecture without deleting
-    or overwriting existing system data.
-    """
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensor_catalog(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sensor_code TEXT NOT NULL UNIQUE,
-            manufacturer TEXT,
-            model TEXT NOT NULL,
-            use_case TEXT,
-            protocol TEXT NOT NULL,
-            default_bus TEXT,
-            default_address TEXT,
-            datasheet_url TEXT,
-            description TEXT,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS firmware_modules(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            module_key TEXT NOT NULL UNIQUE,
-            display_name TEXT NOT NULL,
-            driver_class TEXT NOT NULL,
-            protocol TEXT NOT NULL,
-            library_name TEXT,
-            library_version TEXT,
-            supported_board TEXT NOT NULL DEFAULT 'LILYGO LoRa32',
-            min_firmware_version TEXT,
-            source_file TEXT,
-            notes TEXT,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensor_profiles(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            profile_code TEXT NOT NULL UNIQUE,
-            profile_name TEXT NOT NULL,
-            profile_version INTEGER NOT NULL DEFAULT 1,
-            node_type TEXT NOT NULL,
-            description TEXT,
-
-            capabilities_json TEXT NOT NULL DEFAULT '[]',
-            configuration_schema_json TEXT NOT NULL DEFAULT '{}',
-
-            payload_encoder_key TEXT NOT NULL,
-            payload_version INTEGER NOT NULL DEFAULT 1,
-            f_port INTEGER NOT NULL DEFAULT 1,
-            uplink_interval_seconds INTEGER NOT NULL DEFAULT 60,
-
-            ttn_formatter_code TEXT NOT NULL,
-            ttn_formatter_type TEXT NOT NULL DEFAULT 'javascript',
-
-            tb_device_profile_name TEXT,
-
-            icon_type TEXT NOT NULL DEFAULT 'default',
-            icon_color TEXT,
-
-            status TEXT NOT NULL DEFAULT 'draft',
-            enabled INTEGER NOT NULL DEFAULT 1,
-            is_system INTEGER NOT NULL DEFAULT 0,
-
-            schema_checksum TEXT,
-
-            created_by TEXT,
-            updated_by TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensor_profile_sensors(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            profile_id INTEGER NOT NULL,
-            sensor_id INTEGER NOT NULL,
-            firmware_module_id INTEGER,
-
-            role TEXT NOT NULL DEFAULT 'primary',
-            required INTEGER NOT NULL DEFAULT 1,
-            configuration_json TEXT NOT NULL DEFAULT '{}',
-            display_order INTEGER NOT NULL DEFAULT 0,
-
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (profile_id)
-                REFERENCES sensor_profiles(id)
-                ON DELETE CASCADE,
-
-            FOREIGN KEY (sensor_id)
-                REFERENCES sensor_catalog(id),
-
-            FOREIGN KEY (firmware_module_id)
-                REFERENCES firmware_modules(id),
-
-            UNIQUE(profile_id, sensor_id, role)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensor_profile_fields(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            profile_id INTEGER NOT NULL,
-
-            field_key TEXT NOT NULL,
-            label TEXT NOT NULL,
-            unit TEXT,
-            data_type TEXT NOT NULL DEFAULT 'number',
-
-            payload_order INTEGER,
-            byte_offset INTEGER,
-            byte_length INTEGER,
-            scale REAL NOT NULL DEFAULT 1.0,
-            signed INTEGER NOT NULL DEFAULT 0,
-            endianness TEXT NOT NULL DEFAULT 'big',
-
-            required INTEGER NOT NULL DEFAULT 1,
-            nullable INTEGER NOT NULL DEFAULT 0,
-
-            display_order INTEGER NOT NULL DEFAULT 0,
-            precision_digits INTEGER,
-
-            visible_floor INTEGER NOT NULL DEFAULT 1,
-            visible_dashboard INTEGER NOT NULL DEFAULT 1,
-
-            min_value REAL,
-            max_value REAL,
-            default_value_json TEXT,
-
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (profile_id)
-                REFERENCES sensor_profiles(id)
-                ON DELETE CASCADE,
-
-            UNIQUE(profile_id, field_key)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensor_profile_rules(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            profile_id INTEGER NOT NULL,
-
-            rule_code TEXT NOT NULL,
-            field_key TEXT NOT NULL,
-            operator TEXT NOT NULL,
-
-            threshold_value REAL,
-            threshold_value_2 REAL,
-            expected_boolean INTEGER,
-            expected_text TEXT,
-
-            severity TEXT NOT NULL DEFAULT 'warning',
-            alarm_type TEXT NOT NULL,
-            message_template TEXT NOT NULL,
-
-            debounce_seconds INTEGER NOT NULL DEFAULT 0,
-            cooldown_seconds INTEGER NOT NULL DEFAULT 300,
-            auto_resolve INTEGER NOT NULL DEFAULT 1,
-            enabled INTEGER NOT NULL DEFAULT 1,
-
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (profile_id)
-                REFERENCES sensor_profiles(id)
-                ON DELETE CASCADE,
-
-            UNIQUE(profile_id, rule_code)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensor_profile_versions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            profile_id INTEGER NOT NULL,
-            version INTEGER NOT NULL,
-
-            snapshot_json TEXT NOT NULL,
-            change_note TEXT,
-            created_by TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (profile_id)
-                REFERENCES sensor_profiles(id)
-                ON DELETE CASCADE,
-
-            UNIQUE(profile_id, version)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS profile_firmware_compatibility(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            profile_id INTEGER NOT NULL,
-            firmware_module_id INTEGER NOT NULL,
-
-            min_firmware_version TEXT,
-            max_firmware_version TEXT,
-            hardware_revision TEXT,
-            required_features_json TEXT NOT NULL DEFAULT '[]',
-
-            enabled INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (profile_id)
-                REFERENCES sensor_profiles(id)
-                ON DELETE CASCADE,
-
-            FOREIGN KEY (firmware_module_id)
-                REFERENCES firmware_modules(id)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS device_configuration_history(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            device_id TEXT NOT NULL,
-            profile_id INTEGER,
-            profile_code TEXT,
-            profile_version INTEGER,
-            payload_version INTEGER,
-            firmware_version TEXT,
-
-            configuration_status TEXT NOT NULL DEFAULT 'pending',
-            configuration_payload_json TEXT,
-            configuration_checksum TEXT,
-            error_message TEXT,
-
-            source TEXT NOT NULL DEFAULT 'admin',
-            requested_by TEXT,
-            requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            applied_at TEXT,
-
-            FOREIGN KEY (profile_id)
-                REFERENCES sensor_profiles(id)
-        )
-    """
-        )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensor_profile_test_runs(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            profile_id INTEGER NOT NULL,
-
-            test_type TEXT NOT NULL,
-            input_payload_json TEXT,
-            decoded_telemetry_json TEXT,
-            validation_errors_json TEXT,
-            alarms_generated_json TEXT,
-
-            status TEXT NOT NULL,
-            notes TEXT,
-            created_by TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (profile_id)
-                REFERENCES sensor_profiles(id)
-                ON DELETE CASCADE
-        )
-    """
-        )
-    safe_add_column(conn, 'devices', 'profile_id INTEGER')
-    safe_add_column(conn, 'devices', 'profile_code TEXT')
-    safe_add_column(conn, 'devices', 'profile_version INTEGER')
-    safe_add_column(conn, 'devices', 'payload_version INTEGER')
-    safe_add_column(conn, 'devices', 'firmware_version TEXT')
-    safe_add_column(conn, 'devices',
-        "configuration_status TEXT DEFAULT 'legacy'")
-    safe_add_column(conn, 'devices', 'configuration_error TEXT')
-    safe_add_column(conn, 'devices', 'configuration_updated_at TEXT')
-    safe_add_column(conn, 'devices', 'configuration_checksum TEXT')
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_sensor_profiles_enabled
-        ON sensor_profiles(enabled, status)
-    """
-        )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_sensor_profile_fields_profile
-        ON sensor_profile_fields(profile_id, display_order)
-    """
-        )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_sensor_profile_rules_profile
-        ON sensor_profile_rules(profile_id, enabled)
-    """
-        )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_profile_sensors_profile
-        ON sensor_profile_sensors(profile_id, display_order)
-    """
-        )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_device_profile_id
-        ON devices(profile_id)
-    """
-        )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_device_profile_code
-        ON devices(profile_code)
-    """
-        )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_device_configuration_history_device
-        ON device_configuration_history(device_id, requested_at)
-    """
-        )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_profile_test_runs_profile
-        ON sensor_profile_test_runs(profile_id, created_at)
-    """
-        )
-
-
-def seed_default_sensor_profiles(conn: sqlite3.Connection):
-    """
-    Seed the current legacy node types as advanced database profiles.
-
-    This function is idempotent:
-    - Existing profiles are not duplicated.
-    - Existing fields and rules are not overwritten.
-    - Running db() repeatedly is safe.
-    """
-    sensor_rows = [{'sensor_code': 'SHT30_SHT31', 'manufacturer':
-        'Sensirion', 'model': 'SHT30 / SHT31', 'use_case': 'environment',
-        'protocol': 'i2c', 'default_bus': 'I2C', 'default_address': '0x44',
-        'description':
-        'Temperature and humidity sensor currently supported by the LILYGO firmware.'
-        }, {'sensor_code': 'GENERIC_OCCUPANCY_INPUT', 'manufacturer':
-        'Generic', 'model': 'Generic Occupancy Input', 'use_case':
-        'occupancy', 'protocol': 'digital', 'default_bus': 'GPIO',
-        'default_address': None, 'description':
-        'Generic occupancy or motion input retained for the existing occupancy payload.'
-        }, {'sensor_code': 'GENERIC_SAFETY_INPUT', 'manufacturer':
-        'Generic', 'model': 'Generic Safety Input', 'use_case': 'safety',
-        'protocol': 'digital', 'default_bus': 'GPIO', 'default_address':
-        None, 'description':
-        'Generic Boolean safety input retained for the existing safety payload.'
-        }, {'sensor_code': 'LEGACY_ENERGY_INPUT', 'manufacturer': 'Generic',
-        'model': 'Legacy Energy Meter Input', 'use_case': 'energy',
-        'protocol': 'virtual', 'default_bus': None, 'default_address': None,
-        'description':
-        'Compatibility record for the existing voltage, current and power payload.'
-        }]
-    for sensor in sensor_rows:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO sensor_catalog(
-                sensor_code,
-                manufacturer,
-                model,
-                use_case,
-                protocol,
-                default_bus,
-                default_address,
-                description,
-                enabled
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-            """
-            , (sensor['sensor_code'], sensor['manufacturer'], sensor[
-            'model'], sensor['use_case'], sensor['protocol'], sensor[
-            'default_bus'], sensor['default_address'], sensor['description']))
-    module_rows = [{'module_key': 'sht31_i2c', 'display_name':
-        'SHT30/SHT31 I2C Module', 'driver_class': 'SHT31SensorModule',
-        'protocol': 'i2c', 'library_name': 'Adafruit SHT31 Library',
-        'library_version': None, 'min_firmware_version': '1.0.0',
-        'source_file': 'SHT31SensorModule.cpp', 'notes':
-        'Uses I2C address 0x44 or 0x45.'}, {'module_key':
-        'generic_occupancy_input', 'display_name':
-        'Generic Occupancy Module', 'driver_class': 'OccupancySensorModule',
-        'protocol': 'digital', 'library_name': None, 'library_version':
-        None, 'min_firmware_version': '1.0.0', 'source_file':
-        'OccupancySensorModule.cpp', 'notes':
-        'Generic Boolean motion or presence input.'}, {'module_key':
-        'generic_safety_input', 'display_name': 'Generic Safety Module',
-        'driver_class': 'SafetySensorModule', 'protocol': 'digital',
-        'library_name': None, 'library_version': None,
-        'min_firmware_version': '1.0.0', 'source_file':
-        'SafetySensorModule.cpp', 'notes':
-        'Generic Boolean safety or alarm input.'}, {'module_key':
-        'legacy_energy_input', 'display_name': 'Legacy Energy Module',
-        'driver_class': 'EnergySensorModule', 'protocol': 'virtual',
-        'library_name': None, 'library_version': None,
-        'min_firmware_version': '1.0.0', 'source_file':
-        'EnergySensorModule.cpp', 'notes':
-        'Compatibility module for voltage, current and power. A physical energy sensor driver will replace it later.'
-        }]
-    for module in module_rows:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO firmware_modules(
-                module_key,
-                display_name,
-                driver_class,
-                protocol,
-                library_name,
-                library_version,
-                min_firmware_version,
-                source_file,
-                notes,
-                enabled
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-            """
-            , (module['module_key'], module['display_name'], module[
-            'driver_class'], module['protocol'], module['library_name'],
-            module['library_version'], module['min_firmware_version'],
-            module['source_file'], module['notes']))
-    profiles = [{'profile_code': 'ENV_SHT31_V1', 'profile_name':
-        'SHT30/SHT31 Environment', 'node_type': 'environment',
-        'description':
-        'Environment profile for temperature and humidity using an SHT30 or SHT31 sensor.'
-        , 'capabilities': ['environment'], 'configuration_schema': {
-        'protocol': 'i2c', 'properties': {'sda_pin': {'type': 'integer',
-        'default': 21}, 'scl_pin': {'type': 'integer', 'default': 22},
-        'i2c_address': {'type': 'string', 'enum': ['0x44', '0x45'],
-        'default': '0x44'}}}, 'payload_encoder_key': 'environment_v1',
-        'payload_version': 1, 'f_port': 1, 'uplink_interval_seconds': 60,
-        'formatter': FORMATTERS['environment'], 'tb_device_profile_name':
-        'environment_profile', 'icon_type': 'env', 'icon_color': '#16a34a',
-        'sensors': [{'sensor_code': 'SHT30_SHT31', 'module_key':
-        'sht31_i2c', 'role': 'primary', 'required': 1, 'configuration': {
-        'address': '0x44', 'alternate_address': '0x45'}, 'display_order': 1
-        }], 'fields': [{'field_key': 'temperature', 'label': 'Temperature',
-        'unit': '°C', 'data_type': 'number', 'payload_order': 1,
-        'byte_offset': 0, 'byte_length': 2, 'scale': 0.01, 'signed': 1,
-        'endianness': 'big', 'required': 1, 'nullable': 0, 'display_order':
-        1, 'precision_digits': 2, 'min_value': -40, 'max_value': 125}, {
-        'field_key': 'humidity', 'label': 'Humidity', 'unit': '%',
-        'data_type': 'number', 'payload_order': 2, 'byte_offset': 2,
-        'byte_length': 2, 'scale': 0.01, 'signed': 0, 'endianness': 'big',
-        'required': 1, 'nullable': 0, 'display_order': 2,
-        'precision_digits': 2, 'min_value': 0, 'max_value': 100}], 'rules':
-        [{'rule_code': 'ENV_HIGH_TEMPERATURE', 'field_key': 'temperature',
-        'operator': '>', 'threshold_value': 30, 'severity': 'warning',
-        'alarm_type': 'environment', 'message_template':
-        'High temperature: {value} °C exceeds {threshold} °C'}, {
-        'rule_code': 'ENV_HIGH_HUMIDITY', 'field_key': 'humidity',
-        'operator': '>', 'threshold_value': 80, 'severity': 'warning',
-        'alarm_type': 'environment', 'message_template':
-        'High humidity: {value}% exceeds {threshold}%'}]}, {'profile_code':
-        'OCC_GENERIC_V1', 'profile_name': 'Generic Occupancy', 'node_type':
-        'occupancy', 'description':
-        'Compatibility profile for the existing one-byte occupancy payload.',
-        'capabilities': ['occupancy'], 'configuration_schema': {'protocol':
-        'digital', 'properties': {'signal_pin': {'type': 'integer'},
-        'active_level': {'type': 'string', 'enum': ['HIGH', 'LOW'],
-        'default': 'HIGH'}}}, 'payload_encoder_key': 'occupancy_v1',
-        'payload_version': 1, 'f_port': 1, 'uplink_interval_seconds': 30,
-        'formatter': FORMATTERS['occupancy'], 'tb_device_profile_name':
-        'occupancy_profile', 'icon_type': 'occupancy', 'icon_color':
-        '#2563eb', 'sensors': [{'sensor_code': 'GENERIC_OCCUPANCY_INPUT',
-        'module_key': 'generic_occupancy_input', 'role': 'primary',
-        'required': 1, 'configuration': {'active_level': 'HIGH'},
-        'display_order': 1}], 'fields': [{'field_key': 'motion', 'label':
-        'Motion', 'unit': None, 'data_type': 'boolean', 'payload_order': 1,
-        'byte_offset': 0, 'byte_length': 1, 'scale': 1, 'signed': 0,
-        'endianness': 'big', 'required': 1, 'nullable': 0, 'display_order':
-        1, 'precision_digits': None, 'min_value': None, 'max_value': None}],
-        'rules': [{'rule_code': 'OCC_MOTION_DETECTED', 'field_key':
-        'motion', 'operator': '==', 'expected_boolean': 1, 'severity':
-        'warning', 'alarm_type': 'occupancy', 'message_template':
-        'Motion detected'}]}, {'profile_code': 'SAFETY_GENERIC_V1',
-        'profile_name': 'Generic Safety', 'node_type': 'safety',
-        'description':
-        'Compatibility profile for the existing one-byte Boolean safety payload.'
-        , 'capabilities': ['safety'], 'configuration_schema': {'protocol':
-        'digital', 'properties': {'signal_pin': {'type': 'integer'},
-        'active_level': {'type': 'string', 'enum': ['HIGH', 'LOW'],
-        'default': 'HIGH'}}}, 'payload_encoder_key': 'safety_v1',
-        'payload_version': 1, 'f_port': 1, 'uplink_interval_seconds': 30,
-        'formatter': FORMATTERS['safety'], 'tb_device_profile_name':
-        'safety_profile', 'icon_type': 'alarm', 'icon_color': '#dc2626',
-        'sensors': [{'sensor_code': 'GENERIC_SAFETY_INPUT', 'module_key':
-        'generic_safety_input', 'role': 'primary', 'required': 1,
-        'configuration': {'active_level': 'HIGH'}, 'display_order': 1}],
-        'fields': [{'field_key': 'alarm', 'label': 'Safety Alarm', 'unit':
-        None, 'data_type': 'boolean', 'payload_order': 1, 'byte_offset': 0,
-        'byte_length': 1, 'scale': 1, 'signed': 0, 'endianness': 'big',
-        'required': 1, 'nullable': 0, 'display_order': 1,
-        'precision_digits': None, 'min_value': None, 'max_value': None}],
-        'rules': [{'rule_code': 'SAFETY_ALARM_ACTIVE', 'field_key': 'alarm',
-        'operator': '==', 'expected_boolean': 1, 'severity': 'critical',
-        'alarm_type': 'safety', 'message_template': 'Safety alarm detected'
-        }]}, {'profile_code': 'ENERGY_LEGACY_V1', 'profile_name':
-        'Legacy Energy', 'node_type': 'energy', 'description':
-        'Compatibility profile for the existing six-byte voltage, current and power payload.'
-        , 'capabilities': ['energy'], 'configuration_schema': {'protocol':
-        'virtual', 'properties': {}}, 'payload_encoder_key': 'energy_v1',
-        'payload_version': 1, 'f_port': 1, 'uplink_interval_seconds': 60,
-        'formatter': FORMATTERS['energy'], 'tb_device_profile_name':
-        'energy_profile', 'icon_type': 'energy', 'icon_color': '#f59e0b',
-        'sensors': [{'sensor_code': 'LEGACY_ENERGY_INPUT', 'module_key':
-        'legacy_energy_input', 'role': 'primary', 'required': 1,
-        'configuration': {}, 'display_order': 1}], 'fields': [{'field_key':
-        'voltage', 'label': 'Voltage', 'unit': 'V', 'data_type': 'number',
-        'payload_order': 1, 'byte_offset': 0, 'byte_length': 2, 'scale': 
-        0.01, 'signed': 0, 'endianness': 'big', 'required': 1, 'nullable': 
-        0, 'display_order': 1, 'precision_digits': 2, 'min_value': 0,
-        'max_value': 500}, {'field_key': 'current', 'label': 'Current',
-        'unit': 'A', 'data_type': 'number', 'payload_order': 2,
-        'byte_offset': 2, 'byte_length': 2, 'scale': 0.01, 'signed': 0,
-        'endianness': 'big', 'required': 1, 'nullable': 0, 'display_order':
-        2, 'precision_digits': 2, 'min_value': 0, 'max_value': 100}, {
-        'field_key': 'power', 'label': 'Power', 'unit': 'W', 'data_type':
-        'number', 'payload_order': 3, 'byte_offset': 4, 'byte_length': 2,
-        'scale': 0.1, 'signed': 0, 'endianness': 'big', 'required': 1,
-        'nullable': 0, 'display_order': 3, 'precision_digits': 1,
-        'min_value': 0, 'max_value': 10000}], 'rules': [{'rule_code':
-        'ENERGY_HIGH_POWER', 'field_key': 'power', 'operator': '>',
-        'threshold_value': 5000, 'severity': 'warning', 'alarm_type':
-        'energy', 'message_template':
-        'High power usage: {value} W exceeds {threshold} W'}, {'rule_code':
-        'ENERGY_HIGH_VOLTAGE', 'field_key': 'voltage', 'operator': '>',
-        'threshold_value': 260, 'severity': 'critical', 'alarm_type':
-        'energy', 'message_template':
-        'High voltage: {value} V exceeds {threshold} V'}, {'rule_code':
-        'ENERGY_HIGH_CURRENT', 'field_key': 'current', 'operator': '>',
-        'threshold_value': 20, 'severity': 'warning', 'alarm_type':
-        'energy', 'message_template':
-        'High current: {value} A exceeds {threshold} A'}]}, {'profile_code':
-        'MULTI_LEGACY_V1', 'profile_name': 'Legacy Multi-Sensor',
-        'node_type': 'multi', 'description':
-        'Compatibility profile for the current 13-byte multi-sensor LILYGO payload.'
-        , 'capabilities': ['environment', 'occupancy', 'safety', 'energy'],
-        'configuration_schema': {'protocol': 'mixed', 'properties': {
-        'sda_pin': {'type': 'integer', 'default': 21}, 'scl_pin': {'type':
-        'integer', 'default': 22}, 'i2c_address': {'type': 'string', 'enum':
-        ['0x44', '0x45'], 'default': '0x44'}}}, 'payload_encoder_key':
-        'multi_v1', 'payload_version': 1, 'f_port': 1,
-        'uplink_interval_seconds': 60, 'formatter': FORMATTERS['multi'],
-        'tb_device_profile_name': 'default', 'icon_type': 'multi',
-        'icon_color': '#7c3aed', 'sensors': [{'sensor_code': 'SHT30_SHT31',
-        'module_key': 'sht31_i2c', 'role': 'environment', 'required': 1,
-        'configuration': {'address': '0x44', 'alternate_address': '0x45'},
-        'display_order': 1}, {'sensor_code': 'GENERIC_OCCUPANCY_INPUT',
-        'module_key': 'generic_occupancy_input', 'role': 'occupancy',
-        'required': 0, 'configuration': {}, 'display_order': 2}, {
-        'sensor_code': 'GENERIC_SAFETY_INPUT', 'module_key':
-        'generic_safety_input', 'role': 'safety', 'required': 0,
-        'configuration': {}, 'display_order': 3}, {'sensor_code':
-        'LEGACY_ENERGY_INPUT', 'module_key': 'legacy_energy_input', 'role':
-        'energy', 'required': 0, 'configuration': {}, 'display_order': 4}],
-        'fields': [{'field_key': 'temperature', 'label': 'Temperature',
-        'unit': '°C', 'data_type': 'number', 'payload_order': 1,
-        'byte_offset': 0, 'byte_length': 2, 'scale': 0.01, 'signed': 1,
-        'endianness': 'big', 'required': 1, 'nullable': 0, 'display_order':
-        1, 'precision_digits': 2, 'min_value': -40, 'max_value': 125}, {
-        'field_key': 'humidity', 'label': 'Humidity', 'unit': '%',
-        'data_type': 'number', 'payload_order': 2, 'byte_offset': 2,
-        'byte_length': 2, 'scale': 0.01, 'signed': 0, 'endianness': 'big',
-        'required': 1, 'nullable': 0, 'display_order': 2,
-        'precision_digits': 2, 'min_value': 0, 'max_value': 100}, {
-        'field_key': 'motion', 'label': 'Motion', 'unit': None, 'data_type':
-        'boolean', 'payload_order': 3, 'byte_offset': 4, 'byte_length': 1,
-        'scale': 1, 'signed': 0, 'endianness': 'big', 'required': 1,
-        'nullable': 0, 'display_order': 3, 'precision_digits': None,
-        'min_value': None, 'max_value': None}, {'field_key': 'alarm',
-        'label': 'Safety Alarm', 'unit': None, 'data_type': 'boolean',
-        'payload_order': 4, 'byte_offset': 5, 'byte_length': 1, 'scale': 1,
-        'signed': 0, 'endianness': 'big', 'required': 1, 'nullable': 0,
-        'display_order': 4, 'precision_digits': None, 'min_value': None,
-        'max_value': None}, {'field_key': 'voltage', 'label': 'Voltage',
-        'unit': 'V', 'data_type': 'number', 'payload_order': 5,
-        'byte_offset': 6, 'byte_length': 2, 'scale': 0.01, 'signed': 0,
-        'endianness': 'big', 'required': 1, 'nullable': 0, 'display_order':
-        5, 'precision_digits': 2, 'min_value': 0, 'max_value': 500}, {
-        'field_key': 'current', 'label': 'Current', 'unit': 'A',
-        'data_type': 'number', 'payload_order': 6, 'byte_offset': 8,
-        'byte_length': 2, 'scale': 0.01, 'signed': 0, 'endianness': 'big',
-        'required': 1, 'nullable': 0, 'display_order': 6,
-        'precision_digits': 2, 'min_value': 0, 'max_value': 100}, {
-        'field_key': 'power', 'label': 'Power', 'unit': 'W', 'data_type':
-        'number', 'payload_order': 7, 'byte_offset': 10, 'byte_length': 2,
-        'scale': 0.1, 'signed': 0, 'endianness': 'big', 'required': 1,
-        'nullable': 0, 'display_order': 7, 'precision_digits': 1,
-        'min_value': 0, 'max_value': 10000}, {'field_key': 'battery',
-        'label': 'Battery', 'unit': '%', 'data_type': 'number',
-        'payload_order': 8, 'byte_offset': 12, 'byte_length': 1, 'scale': 1,
-        'signed': 0, 'endianness': 'big', 'required': 1, 'nullable': 0,
-        'display_order': 8, 'precision_digits': 0, 'min_value': 0,
-        'max_value': 100}], 'rules': [{'rule_code':
-        'MULTI_HIGH_TEMPERATURE', 'field_key': 'temperature', 'operator':
-        '>', 'threshold_value': 30, 'severity': 'warning', 'alarm_type':
-        'environment', 'message_template':
-        'High temperature: {value} °C exceeds {threshold} °C'}, {
-        'rule_code': 'MULTI_HIGH_HUMIDITY', 'field_key': 'humidity',
-        'operator': '>', 'threshold_value': 80, 'severity': 'warning',
-        'alarm_type': 'environment', 'message_template':
-        'High humidity: {value}% exceeds {threshold}%'}, {'rule_code':
-        'MULTI_MOTION_DETECTED', 'field_key': 'motion', 'operator': '==',
-        'expected_boolean': 1, 'severity': 'warning', 'alarm_type':
-        'occupancy', 'message_template': 'Motion detected'}, {'rule_code':
-        'MULTI_SAFETY_ALARM', 'field_key': 'alarm', 'operator': '==',
-        'expected_boolean': 1, 'severity': 'critical', 'alarm_type':
-        'safety', 'message_template': 'Safety alarm detected'}, {
-        'rule_code': 'MULTI_HIGH_POWER', 'field_key': 'power', 'operator':
-        '>', 'threshold_value': 5000, 'severity': 'warning', 'alarm_type':
-        'energy', 'message_template':
-        'High power usage: {value} W exceeds {threshold} W'}, {'rule_code':
-        'MULTI_HIGH_VOLTAGE', 'field_key': 'voltage', 'operator': '>',
-        'threshold_value': 260, 'severity': 'critical', 'alarm_type':
-        'energy', 'message_template':
-        'High voltage: {value} V exceeds {threshold} V'}, {'rule_code':
-        'MULTI_HIGH_CURRENT', 'field_key': 'current', 'operator': '>',
-        'threshold_value': 20, 'severity': 'warning', 'alarm_type':
-        'energy', 'message_template':
-        'High current: {value} A exceeds {threshold} A'}, {'rule_code':
-        'MULTI_LOW_BATTERY', 'field_key': 'battery', 'operator': '<=',
-        'threshold_value': 20, 'severity': 'warning', 'alarm_type':
-        'maintenance', 'message_template':
-        'Low battery: {value}% is at or below {threshold}%'}, {'rule_code':
-        'MULTI_CRITICAL_BATTERY', 'field_key': 'battery', 'operator': '<=',
-        'threshold_value': 10, 'severity': 'critical', 'alarm_type':
-        'maintenance', 'message_template':
-        'Critical battery: {value}% is at or below {threshold}%'}]}]
-    for profile in profiles:
-        checksum_source = {'profile_code': profile['profile_code'],
-            'profile_version': 1, 'node_type': profile['node_type'],
-            'capabilities': profile['capabilities'], 'configuration_schema':
-            profile['configuration_schema'], 'payload_encoder_key': profile
-            ['payload_encoder_key'], 'payload_version': profile[
-            'payload_version'], 'f_port': profile['f_port'],
-            'uplink_interval_seconds': profile['uplink_interval_seconds'],
-            'fields': profile['fields'], 'rules': profile['rules'],
-            'sensors': profile['sensors']}
-        schema_checksum = hashlib.sha256(json.dumps(checksum_source,
-            sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO sensor_profiles(
-                profile_code,
-                profile_name,
-                profile_version,
-                node_type,
-                description,
-
-                capabilities_json,
-                configuration_schema_json,
-
-                payload_encoder_key,
-                payload_version,
-                f_port,
-                uplink_interval_seconds,
-
-                ttn_formatter_code,
-                ttn_formatter_type,
-
-                tb_device_profile_name,
-
-                icon_type,
-                icon_color,
-
-                status,
-                enabled,
-                is_system,
-
-                schema_checksum,
-                created_by,
-                updated_by
-            )
-            VALUES (
-                ?, ?, ?, ?, ?,
-                ?, ?,
-                ?, ?, ?, ?,
-                ?, ?,
-                ?,
-                ?, ?,
-                ?, ?, ?,
-                ?, ?, ?
-            )
-            """
-            , (profile['profile_code'], profile['profile_name'], 1, profile
-            ['node_type'], profile['description'], json.dumps(profile[
-            'capabilities']), json.dumps(profile['configuration_schema']),
-            profile['payload_encoder_key'], profile['payload_version'],
-            profile['f_port'], profile['uplink_interval_seconds'], profile[
-            'formatter'], 'javascript', profile['tb_device_profile_name'],
-            profile['icon_type'], profile['icon_color'], 'active', 1, 1,
-            schema_checksum, 'system_seed', 'system_seed'))
-        profile_row = conn.execute(
-            """
-            SELECT *
-            FROM sensor_profiles
-            WHERE profile_code = ?
-            LIMIT 1
-            """
-            , (profile['profile_code'],)).fetchone()
-        if not profile_row:
-            raise RuntimeError(
-                f"Could not create profile: {profile['profile_code']}")
-        profile_id = profile_row['id']
-        conn.execute(
-            """
-            UPDATE sensor_profiles
-            SET schema_checksum = COALESCE(schema_checksum, ?)
-            WHERE id = ?
-            """
-            , (schema_checksum, profile_id))
-        for component in profile['sensors']:
-            sensor_row = conn.execute(
-                """
-                SELECT id
-                FROM sensor_catalog
-                WHERE sensor_code = ?
-                LIMIT 1
-                """
-                , (component['sensor_code'],)).fetchone()
-            module_row = conn.execute(
-                """
-                SELECT id, min_firmware_version
-                FROM firmware_modules
-                WHERE module_key = ?
-                LIMIT 1
-                """
-                , (component['module_key'],)).fetchone()
-            if not sensor_row:
-                raise RuntimeError('Missing seeded sensor: ' + component[
-                    'sensor_code'])
-            if not module_row:
-                raise RuntimeError('Missing seeded firmware module: ' +
-                    component['module_key'])
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO sensor_profile_sensors(
-                    profile_id,
-                    sensor_id,
-                    firmware_module_id,
-                    role,
-                    required,
-                    configuration_json,
-                    display_order
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """
-                , (profile_id, sensor_row['id'], module_row['id'],
-                component['role'], component['required'], json.dumps(
-                component['configuration']), component['display_order']))
-            compatibility_exists = conn.execute(
-                """
-                SELECT id
-                FROM profile_firmware_compatibility
-                WHERE profile_id = ?
-                  AND firmware_module_id = ?
-                LIMIT 1
-                """
-                , (profile_id, module_row['id'])).fetchone()
-            if not compatibility_exists:
-                conn.execute(
-                    """
-                    INSERT INTO profile_firmware_compatibility(
-                        profile_id,
-                        firmware_module_id,
-                        min_firmware_version,
-                        max_firmware_version,
-                        hardware_revision,
-                        required_features_json,
-                        enabled
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, 1)
-                    """
-                    , (profile_id, module_row['id'], module_row[
-                    'min_firmware_version'], None, None, json.dumps([
-                    profile['payload_encoder_key'],
-                    f"payload_v{profile['payload_version']}"])))
-        for field in profile['fields']:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO sensor_profile_fields(
-                    profile_id,
-                    field_key,
-                    label,
-                    unit,
-                    data_type,
-
-                    payload_order,
-                    byte_offset,
-                    byte_length,
-                    scale,
-                    signed,
-                    endianness,
-
-                    required,
-                    nullable,
-
-                    display_order,
-                    precision_digits,
-
-                    visible_floor,
-                    visible_dashboard,
-
-                    min_value,
-                    max_value,
-                    default_value_json
-                )
-                VALUES (
-                    ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?,
-                    ?, ?,
-                    ?, ?,
-                    ?, ?,
-                    ?, ?, ?
-                )
-                """
-                , (profile_id, field['field_key'], field['label'], field[
-                'unit'], field['data_type'], field['payload_order'], field[
-                'byte_offset'], field['byte_length'], field['scale'], field
-                ['signed'], field['endianness'], field['required'], field[
-                'nullable'], field['display_order'], field[
-                'precision_digits'], 1, 1, field['min_value'], field[
-                'max_value'], None))
-        for rule in profile['rules']:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO sensor_profile_rules(
-                    profile_id,
-                    rule_code,
-                    field_key,
-                    operator,
-
-                    threshold_value,
-                    threshold_value_2,
-                    expected_boolean,
-                    expected_text,
-
-                    severity,
-                    alarm_type,
-                    message_template,
-
-                    debounce_seconds,
-                    cooldown_seconds,
-                    auto_resolve,
-                    enabled
-                )
-                VALUES (
-                    ?, ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?, ?
-                )
-                """
-                , (profile_id, rule['rule_code'], rule['field_key'], rule[
-                'operator'], rule.get('threshold_value'), rule.get(
-                'threshold_value_2'), rule.get('expected_boolean'), rule.
-                get('expected_text'), rule['severity'], rule['alarm_type'],
-                rule['message_template'], rule.get('debounce_seconds', 0),
-                rule.get('cooldown_seconds', 300), rule.get('auto_resolve',
-                1), 1))
-        snapshot = {'profile': {'profile_code': profile['profile_code'],
-            'profile_name': profile['profile_name'], 'profile_version': 1,
-            'node_type': profile['node_type'], 'description': profile[
-            'description'], 'capabilities': profile['capabilities'],
-            'configuration_schema': profile['configuration_schema'],
-            'payload_encoder_key': profile['payload_encoder_key'],
-            'payload_version': profile['payload_version'], 'f_port':
-            profile['f_port'], 'uplink_interval_seconds': profile[
-            'uplink_interval_seconds'], 'tb_device_profile_name': profile[
-            'tb_device_profile_name'], 'icon_type': profile['icon_type'],
-            'icon_color': profile['icon_color'], 'schema_checksum':
-            schema_checksum}, 'sensors': profile['sensors'], 'fields':
-            profile['fields'], 'rules': profile['rules']}
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO sensor_profile_versions(
-                profile_id,
-                version,
-                snapshot_json,
-                change_note,
-                created_by
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """
-            , (profile_id, 1, json.dumps(snapshot),
-            'Initial system profile', 'system_seed'))
-
-
 def db():
     from app.db.connection import get_db_connection
     return get_db_connection()
@@ -2950,8 +1955,8 @@ def ensure_default_admin_user():
         LIMIT 1
     """
             , (ADMIN_EMAIL,)).fetchone()
-        password_data = create_password_hash(ADMIN_PASSWORD)
         if not existing_admin:
+            password_data = create_password_hash(ADMIN_PASSWORD)
             conn.execute(
                 """
             INSERT INTO users(
@@ -2980,6 +1985,7 @@ def ensure_default_admin_user():
             if not admin.get('password_hash'):
                 needs_update = True
             if needs_update:
+                password_data = create_password_hash(ADMIN_PASSWORD)
                 conn.execute(
                     """
                 UPDATE users
@@ -2995,7 +2001,6 @@ def ensure_default_admin_user():
                     'password_hash'], password_data['password_iterations'],
                     admin['id']))
                 conn.commit()
-        conn.close()
     except Exception:
         try:
             conn.rollback()
@@ -3013,40 +2018,29 @@ def create_session_token():
 
 
 def cleanup_expired_sessions(conn):
-    conn.execute(
-        """
+    conn.execute("""
         UPDATE auth_sessions
         SET revoked_at = CURRENT_TIMESTAMP
         WHERE revoked_at IS NULL
           AND datetime(expires_at) <= datetime('now')
-    """
-        )
+    """)
     conn.commit()
 
 
 def create_login_session(conn, user_id: int, request: Request = None):
+    cleanup_expired_sessions(conn)
     raw_token, token_hash = create_session_token()
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=
-        SESSION_TTL_SECONDS)).strftime('%Y-%m-%d %H:%M:%S')
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=SESSION_TTL_SECONDS)).strftime('%Y-%m-%d %H:%M:%S')
     ip_address = None
-    user_agent = ""
+    user_agent = None
     if request:
         if getattr(request, "client", None):
             ip_address = request.client.host
-        if getattr(request, "headers", None):
-            user_agent = request.headers.get("user-agent", "")
-    conn.execute(
-        """
-        INSERT INTO auth_sessions(
-            user_id,
-            token_hash,
-            expires_at,
-            ip_address,
-            user_agent
-        )
+        user_agent = request.headers.get('user-agent')
+    conn.execute("""
+        INSERT INTO auth_sessions(user_id, token_hash, expires_at, ip_address, user_agent)
         VALUES (?, ?, ?, ?, ?)
-    """
-        , (user_id, token_hash, expires_at, ip_address, user_agent))
+    """, (user_id, token_hash, expires_at, ip_address, user_agent))
     conn.commit()
     return raw_token
 
@@ -3058,7 +2052,6 @@ def get_current_user_from_request(request: Request):
     token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
     conn = db()
     try:
-        cleanup_expired_sessions(conn)
         session = conn.execute(
             """
         SELECT *
@@ -3070,7 +2063,6 @@ def get_current_user_from_request(request: Request):
     """
             , (token_hash,)).fetchone()
         if not session:
-            conn.close()
             return None
         user = conn.execute(
             """
@@ -3081,7 +2073,6 @@ def get_current_user_from_request(request: Request):
         LIMIT 1
     """
             , (session['user_id'],)).fetchone()
-        conn.close()
         if not user:
             return None
         return safe_user_dict(user)
@@ -3105,7 +2096,6 @@ def revoke_current_session(request: Request):
     """
             , (token_hash,))
         conn.commit()
-        conn.close()
     except Exception:
         try:
             conn.rollback()
@@ -3135,12 +2125,13 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     public_paths = ('/', '/login', '/admin-login', '/client-login',
         '/auth/login', '/auth/status', '/logout', '/me', '/docs', '/redoc',
-        '/openapi.json', '/favicon.ico')
+        '/openapi.json', '/favicon.ico', '/service-worker.js', '/manifest.json',
+        '/healthz')
     if path in public_paths:
         return await call_next(request)
-    public_prefixes = '/uploads', '/ttn-webhook', '/provision'
+    public_prefixes = ('/uploads', '/ttn-webhook', '/static')
     for prefix in public_prefixes:
-        if path.startswith(prefix):
+        if path == prefix or path.startswith((prefix + '/', prefix + '?')):
             return await call_next(request)
     if path == '/client-portal' or path.startswith('/client-portal/'):
         current_user = get_current_user_from_request(request)
@@ -3154,22 +2145,44 @@ async def auth_middleware(request: Request, call_next):
                 status_code=403)
         requested_user_id = get_requested_client_user_id(request)
         if requested_user_id is None:
-            return RedirectResponse(url=
-                f"/client-portal?user_id={current_user['id']}", status_code=302
-                )
+            if path == '/client-portal':
+                return RedirectResponse(url=
+                    f"/client-portal?user_id={current_user['id']}", status_code=302
+                    )
+            return JSONResponse({'detail': 'User ID required'}, status_code=400)
         if requested_user_id != current_user['id']:
             return JSONResponse({'detail':
                 'You can only access your own client portal'}, status_code=403)
         return await call_next(request)
-    if is_admin_path(path):
-        current_user = get_current_user_from_request(request)
-        if not current_user:
-            return login_redirect_for_request(request, '/admin-login')
-        role = (current_user.get('role') or '').lower()
-        if role != 'admin':
-            return JSONResponse({'detail': 'Admin role required'},
-                status_code=403)
+
+    # Deny-by-default: require authenticated admin for all other routes
+    current_user = get_current_user_from_request(request)
+    if not current_user:
+        return login_redirect_for_request(request, '/admin-login')
+    role = (current_user.get('role') or '').lower()
+    if role != 'admin':
+        return JSONResponse({'detail': 'Admin role required'},
+            status_code=403)
     return await call_next(request)
+
+
+@app.middleware('http')
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    response.headers.setdefault(
+        'Permissions-Policy',
+        'camera=(), microphone=(), geolocation=()',
+    )
+    if request.url.path.startswith('/auth/') or request.url.path in {
+        '/me',
+        '/logout',
+        '/provision',
+    }:
+        response.headers.setdefault('Cache-Control', 'no-store')
+    return response
 
 
 def is_admin_path(path: str):
@@ -3188,10 +2201,9 @@ def is_admin_path(path: str):
         '/firmware-module-manager', '/firmware-modules',
         # Asset hierarchy, inventory and telemetry. These were reachable
         # anonymously: the whole building structure could be read, rewritten
-        # or deleted without a session. The device-facing endpoints
-        # (/provision, /ttn-webhook) are deliberately excluded -- they are
-        # matched earlier by public_prefixes because the LoRaWAN hardware and
-        # TTN call them without a browser session.
+        # or deleted without a session. TTN's webhook remains public at the
+        # transport layer and authenticates with its shared secret. Provisioning
+        # returns device root keys, so it is admin-only.
         '/clients', '/sites', '/buildings', '/floors', '/rooms',
         '/hierarchy', '/floorplans', '/floor-map-data',
         '/devices', '/devices-status', '/device-status',
@@ -3262,6 +2274,7 @@ def validate_config() ->None:
         raise RuntimeError(
             'TTN_BASE_URL, TTN_APP_ID, and TTN_API_KEY must be set in .env')
     normalize_eui(JOIN_EUI, 16)
+    normalize_eui(LORAWAN_APP_KEY, 32)
 
 
 def safe_json_or_text(resp: requests.Response):
@@ -3315,7 +2328,7 @@ def get_device_by_device_id(conn: sqlite3.Connection, device_id: str):
             b.name as building
         FROM devices d
         LEFT JOIN rooms r ON d.room_id = r.id
-        LEFT JOIN floors f ON r.floor_id = f.id
+        LEFT JOIN floors f ON f.id = COALESCE(d.floor_id, r.floor_id)
         LEFT JOIN buildings b ON f.building_id = b.id
         WHERE d.device_id = ?
         LIMIT 1
@@ -3822,7 +2835,7 @@ def check_signal_alarms(telemetry: dict):
 
 def save_alarm_history(conn: sqlite3.Connection, device_id: str, node_type:
     str, building: str, floor: str, room: str, alarm_message: str,
-    telemetry: dict):
+    telemetry: dict, alarm_type: str = 'system', commit: bool = True):
     conn.execute(
         """
         INSERT INTO alarm_history (
@@ -3837,13 +2850,14 @@ def save_alarm_history(conn: sqlite3.Connection, device_id: str, node_type:
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """
-        , (device_id, node_type, building, floor, room, alarm_message,
+        , (device_id, node_type, building, floor, room, alarm_type,
         alarm_message, json.dumps(telemetry)))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def save_latest_telemetry(conn: sqlite3.Connection, device_id: str,
-    telemetry: dict):
+    telemetry: dict, commit: bool = True):
     alarm_active = 1 if telemetry.get('alarm_active') in [True, 'true', 1, '1'
         ] else 0
     alarm_message = telemetry.get('alarm_message', 'OK')
@@ -3871,13 +2885,8 @@ def save_latest_telemetry(conn: sqlite3.Connection, device_id: str,
         VALUES (?, ?)
     """
         , (device_id, json.dumps(telemetry)))
-    conn.execute(
-        """
-        DELETE FROM historical_telemetry 
-        WHERE timestamp <= datetime('now', '-30 days')
-    """
-        )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_local_latest_telemetry(conn, device_id: str):
@@ -4009,6 +3018,7 @@ def log_audit_event(conn, action, actor='admin', target_type=None,
         if message is None:
             message = build_audit_message(action=action, actor=actor,
                 target_type=target_type, target_id=target_id, details=details)
+        stored_details = redact_secrets(details)
         conn.execute(
             """
             INSERT INTO audit_log(
@@ -4030,7 +3040,7 @@ def log_audit_event(conn, action, actor='admin', target_type=None,
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
             , (actor, action, target_type, str(target_id) if target_id is not
-            None else None, message, json.dumps(details, default=str),
+            None else None, message, json.dumps(stored_details, default=str),
             client_id, site_id, building_id, floor_id, room_id, device_id,
             gateway_id, user_id))
         conn.commit()
@@ -4050,13 +3060,13 @@ def get_device_scope_for_audit(conn, device_id):
             SELECT
                 d.device_id AS device_id,
                 d.room_id AS room_id,
-                r.floor_id AS floor_id,
+                f.id AS floor_id,
                 f.building_id AS building_id,
                 b.site_id AS site_id,
                 s.client_id AS client_id
             FROM devices d
             LEFT JOIN rooms r ON d.room_id = r.id
-            LEFT JOIN floors f ON r.floor_id = f.id
+            LEFT JOIN floors f ON f.id = COALESCE(d.floor_id, r.floor_id)
             LEFT JOIN buildings b ON f.building_id = b.id
             LEFT JOIN sites s ON b.site_id = s.id
             WHERE d.device_id = ?
@@ -4739,7 +3749,6 @@ def send_alarm_email(device_id: str, node_type: str, room: str, alarms:
         WHERE id = 1
     """
             ).fetchone()
-        conn.close()
         if not recipients:
             logger.info('No enabled alarm recipients')
             return
@@ -4862,9 +3871,8 @@ def get_floorplan_ids_for_floors_and_rooms(conn, floor_ids, room_ids):
             SELECT id
             FROM floorplans
             WHERE floor_id IN ({placeholders})
-               OR id IN ({placeholders})
         """
-            , floor_ids + floor_ids).fetchall()
+            , floor_ids).fetchall()
         for row in rows:
             floorplan_ids.add(row['id'])
     # Rooms are linked to floors, not directly to floorplans, so the floor
@@ -5025,19 +4033,27 @@ def auto_provision_discovered_device(conn: sqlite3.Connection, device_id: str, r
     if raw_envelope and isinstance(raw_envelope, dict):
         end_device_ids = raw_envelope.get('end_device_ids') or {}
         dev_eui = str(end_device_ids.get('dev_eui') or '').strip() or None
-        join_eui = str(end_device_ids.get('join_eui') or '').strip() or None
+        join_eui = str(end_device_ids.get('join_eui') or '').strip() or JOIN_EUI
 
     # Find the best profile: prefer CAYENNE_LPP_V1, then MULTI_LEGACY_V1, then any active
     profile_row = conn.execute(
-        "SELECT * FROM sensor_profiles WHERE profile_code = 'CAYENNE_LPP_V1' AND enabled = 1"
+        """SELECT * FROM sensor_profiles
+           WHERE profile_code = 'CAYENNE_LPP_V1'
+             AND enabled = 1
+             AND LOWER(status) = 'active'"""
     ).fetchone()
     if not profile_row:
         profile_row = conn.execute(
-            "SELECT * FROM sensor_profiles WHERE profile_code = 'MULTI_LEGACY_V1' AND enabled = 1"
+            """SELECT * FROM sensor_profiles
+               WHERE profile_code = 'MULTI_LEGACY_V1'
+                 AND enabled = 1
+                 AND LOWER(status) = 'active'"""
         ).fetchone()
     if not profile_row:
         profile_row = conn.execute(
-            "SELECT * FROM sensor_profiles WHERE enabled = 1 ORDER BY id LIMIT 1"
+            """SELECT * FROM sensor_profiles
+               WHERE enabled = 1 AND LOWER(status) = 'active'
+               ORDER BY id LIMIT 1"""
         ).fetchone()
 
     profile_id = profile_row['id'] if profile_row else None
@@ -5047,14 +4063,43 @@ def auto_provision_discovered_device(conn: sqlite3.Connection, device_id: str, r
     node_type = str(profile_row['node_type']) if profile_row else 'multi'
     schema_checksum = str(profile_row['schema_checksum'] or '') if profile_row else ''
 
+    # Bound the discovery inbox. Each unknown DevEUI creates a devices row and
+    # an audit row, so without a ceiling anyone able to reach the webhook could
+    # grow the database indefinitely. Known devices never reach this path.
+    unplaced_count = conn.execute(
+        "SELECT COUNT(*) FROM devices WHERE is_placed = 0"
+    ).fetchone()[0]
+    if unplaced_count >= settings.MAX_UNPLACED_DISCOVERED_DEVICES:
+        logger.warning(
+            "Auto-discovery refused for %s: %s unplaced devices already awaiting "
+            "commissioning (limit %s)",
+            clean_device_id,
+            unplaced_count,
+            settings.MAX_UNPLACED_DISCOVERED_DEVICES,
+        )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "message": (
+                    "Discovery inbox is full. Commission or remove unplaced "
+                    "devices before new ones can be discovered."
+                ),
+                "unplaced_devices": unplaced_count,
+                "limit": settings.MAX_UNPLACED_DISCOVERED_DEVICES,
+            },
+        )
+
     friendly_label = f"Discovered {clean_device_id}"
+    chip_mac = dev_eui or clean_device_id
 
     conn.execute(
         """
-        INSERT INTO devices (
+        INSERT OR IGNORE INTO devices (
+            chip_mac,
             device_id,
             dev_eui,
             join_eui,
+            app_key,
             label,
             node_type,
             status,
@@ -5068,12 +4113,14 @@ def auto_provision_discovered_device(conn: sqlite3.Connection, device_id: str, r
             last_seen,
             created_at,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, 'valid', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, 'valid', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,
         (
+            chip_mac,
             clean_device_id,
             dev_eui,
             join_eui,
+            LORAWAN_APP_KEY or None,
             friendly_label,
             node_type,
             profile_id,
@@ -5099,11 +4146,25 @@ def auto_provision_discovered_device(conn: sqlite3.Connection, device_id: str, r
     created_row = conn.execute(
         "SELECT * FROM devices WHERE device_id = ? LIMIT 1", (clean_device_id,)
     ).fetchone()
+    if not created_row and dev_eui:
+        created_row = conn.execute(
+            "SELECT * FROM devices WHERE dev_eui = ? COLLATE NOCASE LIMIT 1",
+            (dev_eui,),
+        ).fetchone()
+    if not created_row:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Could not associate the discovered TTN identity",
+                "device_id": clean_device_id,
+                "dev_eui": dev_eui,
+            },
+        )
     return dict(created_row) if created_row else {}
 
 
 def load_device_profile_context_for_webhook(conn: sqlite3.Connection,
-    device_id: str, raw_envelope: dict | None = None, auto_provision: bool = True):
+    device_id: str, raw_envelope: dict | None = None):
     """
     Load and verify the sensor profile assigned to the device
     that produced a TTN uplink. If unknown, auto-provisions the device.
@@ -5112,21 +4173,27 @@ def load_device_profile_context_for_webhook(conn: sqlite3.Connection,
     if not clean_device_id:
         raise HTTPException(status_code=400, detail=
             'TTN webhook device_id is missing')
+    end_device_ids = raw_envelope.get('end_device_ids') if raw_envelope else {}
+    webhook_dev_eui = str((end_device_ids or {}).get('dev_eui') or '').strip() or None
     device_row = conn.execute(
         """
         SELECT *
         FROM devices
         WHERE device_id = ?
+           OR (? IS NOT NULL AND dev_eui = ? COLLATE NOCASE)
+        ORDER BY CASE WHEN device_id = ? THEN 0 ELSE 1 END
         LIMIT 1
         """
-        , (clean_device_id,)).fetchone()
+        , (clean_device_id, webhook_dev_eui, webhook_dev_eui, clean_device_id)).fetchone()
     if not device_row:
-        if auto_provision:
-            device = auto_provision_discovered_device(conn, clean_device_id, raw_envelope)
-        else:
-            raise HTTPException(status_code=404, detail={'message':
-                'TTN webhook device was not found in the backend database',
-                'device_id': clean_device_id})
+        # A valid TTN uplink is the discovery event. Unknown devices are
+        # inserted into the unplaced inbox and the same uplink continues
+        # through validation and telemetry storage.
+        device = auto_provision_discovered_device(
+            conn,
+            clean_device_id,
+            raw_envelope,
+        )
     else:
         device = dict(device_row)
         try:
@@ -5139,7 +4206,10 @@ def load_device_profile_context_for_webhook(conn: sqlite3.Connection,
     if not profile_identifier:
         # Fallback to CAYENNE_LPP_V1 or default active profile
         fallback_profile = conn.execute(
-            "SELECT id, profile_code FROM sensor_profiles WHERE profile_code = 'CAYENNE_LPP_V1' OR enabled = 1 ORDER BY id LIMIT 1"
+            """SELECT id, profile_code FROM sensor_profiles
+               WHERE enabled = 1 AND LOWER(status) = 'active'
+               ORDER BY (CASE WHEN profile_code = 'CAYENNE_LPP_V1' THEN 0 ELSE 1 END), id
+               LIMIT 1"""
         ).fetchone()
         if fallback_profile:
             conn.execute(
@@ -5372,9 +4442,10 @@ def validate_decoded_payload_against_profile(profile: dict, decoded_payload):
             telemetry[system_key] = system_value
 
     # Preserve all decoded Cayenne LPP channels directly into telemetry
-    for ch_key, ch_val in cayenne_channel_fields.items():
-        if isinstance(ch_val, (int, float, bool, str)):
-            telemetry[ch_key] = ch_val
+    telemetry.update({
+        ch_key: ch_val for ch_key, ch_val in cayenne_channel_fields.items()
+        if isinstance(ch_val, (int, float, bool, str))
+    })
 
     # For universal Cayenne LPP profile, include any other valid numeric/bool fields
     if profile_code == 'CAYENNE_LPP_V1':
@@ -5474,11 +4545,12 @@ def profile_alarm_rule_matches(rule: dict, actual_value):
                 f'Rule for {field_key} requires a second threshold')
         threshold_number_2 = profile_alarm_numeric_value(threshold_value_2,
             field_key)
+        low = min(threshold_number, threshold_number_2)
+        high = max(threshold_number, threshold_number_2)
         if operator == 'between':
-            return threshold_number <= actual_number <= threshold_number_2
+            return low <= actual_number <= high
         if operator == 'outside':
-            return (actual_number < threshold_number or actual_number >
-                threshold_number_2)
+            return (actual_number < low or actual_number > high)
     if operator in {'==', '!='}:
         expected_value = profile_alarm_expected_value(rule)
         values_equal = profile_alarm_values_equal(actual_value, expected_value)
@@ -5692,7 +4764,7 @@ def insert_profile_rule_alarm_history(conn: sqlite3.Connection, device:
 
 def process_profile_alarm_runtime(conn: sqlite3.Connection, device: dict,
     profile: dict, telemetry: dict, evaluation: dict, now: (datetime | None
-    )=None):
+    )=None, commit: bool = True):
     """
     Apply debounce, cooldown and automatic resolution to the
     stateless result returned by evaluate_profile_alarm_rules().
@@ -5708,6 +4780,7 @@ def process_profile_alarm_runtime(conn: sqlite3.Connection, device: dict,
     cooldown_suppressed_rule_codes = []
     already_active_rule_codes = []
     active_condition_messages = []
+    broadcast_events = []
     for rule in profile.get('rules', []):
         if not bool(rule.get('enabled')):
             continue
@@ -5849,10 +4922,13 @@ def process_profile_alarm_runtime(conn: sqlite3.Connection, device: dict,
             alarm_history_id = insert_profile_rule_alarm_history(conn=conn,
                 device=device, profile=profile, alarm=alarm, telemetry=
                 telemetry, triggered_at=now_text)
-            schedule_broadcast({'type': 'ALARM', 'device_name': device.get(
-                'name', 'Unknown Device'), 'rule': alarm.get('rule_code',
-                'Unknown Rule'), 'telemetry': telemetry}, client_id=device.
-                get('client_id'), site_id=device.get('site_id'))
+            broadcast_events.append({
+                'type': 'ALARM',
+                'device_id': device['device_id'],
+                'device_name': device.get('label') or device.get('name') or device.get('device_id'),
+                'rule': alarm.get('rule_code', 'Unknown Rule'),
+                'telemetry': telemetry
+            })
             conn.execute(
                 """
                 UPDATE
@@ -5906,7 +4982,8 @@ def process_profile_alarm_runtime(conn: sqlite3.Connection, device: dict,
               AND rule_code = ?
             """
             , (now_text, now_text, now_text, device['device_id'], rule_code))
-    conn.commit()
+    if commit:
+        conn.commit()
     unique_active_messages = []
     for message in active_condition_messages:
         if message and message not in unique_active_messages:
@@ -5919,7 +4996,8 @@ def process_profile_alarm_runtime(conn: sqlite3.Connection, device: dict,
         'auto_resolved_alarm_ids': auto_resolved_alarm_ids,
         'pending_debounce_rule_codes': pending_debounce_rule_codes,
         'cooldown_suppressed_rule_codes': cooldown_suppressed_rule_codes,
-        'already_active_rule_codes': already_active_rule_codes}
+        'already_active_rule_codes': already_active_rule_codes,
+        'broadcast_events': broadcast_events}
 
 
 def get_active_profile_alarm_records(conn: sqlite3.Connection, device_id: str):
@@ -6014,6 +5092,9 @@ def process_ttn_webhook_background(data: dict):
         conn = db()
         context = load_device_profile_context_for_webhook(conn, device_id, raw_envelope=data)
         device = context['device']
+        # The DevEUI is the stable radio identity. If TTN's human-readable
+        # device ID changed, continue under the existing backend record.
+        device_id = device['device_id']
         profile = context['profile']
         node_type = str(profile.get('node_type') or '').strip().lower()
         capabilities = profile_unique_string_list(profile.get(
@@ -6057,32 +5138,68 @@ def process_ttn_webhook_background(data: dict):
         telemetry['node_type'] = node_type
         telemetry = enrich_battery_telemetry(telemetry)
         telemetry = enrich_signal_telemetry(data, telemetry)
+        # Single source of truth: whether a device is commissioned decides
+        # whether alarms fire at all, so it must not drift from the definition
+        # the UI and the acceptance tooling use.
+        commissioned = build_device_state(device)['commissioned']
         profile_alarm_evaluation = evaluate_profile_alarm_rules(profile,
             telemetry)
-        profile_alarm_runtime = process_profile_alarm_runtime(conn=conn,
-            device=device, profile=profile, telemetry=telemetry, evaluation
-            =profile_alarm_evaluation)
-        active_profile_alarms = get_active_profile_alarm_records(conn,
-            device_id)
+        if commissioned:
+            profile_alarm_runtime = process_profile_alarm_runtime(conn=conn,
+                device=device, profile=profile, telemetry=telemetry, evaluation
+                =profile_alarm_evaluation, commit=False)
+            active_profile_alarms = get_active_profile_alarm_records(conn,
+                device_id)
+        else:
+            profile_alarm_runtime = {
+                'monitoring_state': 'discovery',
+                'suppressed_until_commissioned': True,
+                'triggered_alarm_count': 0,
+                'triggered_alarms': [],
+                'broadcast_events': [],
+            }
+            active_profile_alarms = []
         active_profile_messages = []
         for alarm in active_profile_alarms:
             message = str(alarm.get('alarm_message') or '').strip()
             if message and message not in active_profile_messages:
                 active_profile_messages.append(message)
         system_alarms = []
-        system_alarms.extend(check_battery_alarms(telemetry))
-        system_alarms.extend(check_signal_alarms(telemetry))
+        if commissioned:
+            system_alarms.extend(check_battery_alarms(telemetry))
+            system_alarms.extend(check_signal_alarms(telemetry))
         unique_system_alarms = []
         for alarm in system_alarms:
             message = str(alarm or '').strip()
             if message and message not in unique_system_alarms:
                 unique_system_alarms.append(message)
         system_alarms = unique_system_alarms
+        newly_triggered_system_alarms = []
+        active_system_rows = []
+        if commissioned:
+            active_system_rows = conn.execute(
+                """SELECT id, alarm_message FROM alarm_history
+                   WHERE device_id = ? AND alarm_type = 'system' AND resolved = 0""",
+                (device_id,)
+            ).fetchall()
+        active_system_map = {row['alarm_message']: row['id'] for row in active_system_rows}
+
         for system_alarm in system_alarms:
-            save_alarm_history(conn=conn, device_id=device_id, node_type=
-                node_type, building=device['building'], floor=device[
-                'floor'], room=device['room'], alarm_message=system_alarm,
-                telemetry=telemetry)
+            if system_alarm not in active_system_map:
+                save_alarm_history(conn=conn, device_id=device_id, node_type=
+                    node_type, building=device['building'], floor=device[
+                    'floor'], room=device['room'], alarm_message=system_alarm,
+                    telemetry=telemetry, alarm_type='system', commit=False)
+                newly_triggered_system_alarms.append(system_alarm)
+
+        for active_msg, active_id in active_system_map.items():
+            if active_msg not in system_alarms:
+                conn.execute(
+                    """UPDATE alarm_history
+                       SET resolved = 1, resolved_by = 'system', resolved_at = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (active_id,)
+                )
         current_alarm_messages = []
         for message in (active_profile_messages + system_alarms):
             if message and message not in current_alarm_messages:
@@ -6093,7 +5210,36 @@ def process_ttn_webhook_background(data: dict):
         telemetry['profile_alarm_active_count'] = len(active_profile_alarms)
         telemetry['profile_alarm_rule_codes'] = [alarm['rule_code'] for
             alarm in active_profile_alarms]
-        save_latest_telemetry(conn, device_id, telemetry)
+        # A valid uplink proves connectivity even while a device is still in
+        # discovery. Clear any stale offline record without enabling new
+        # operational alarms before commissioning.
+        conn.execute(
+            """
+            UPDATE alarm_history
+            SET resolved = 1,
+                resolved_by = 'system',
+                resolved_at = CURRENT_TIMESTAMP,
+                resolved_reason = 'Device telemetry resumed'
+            WHERE device_id = ?
+              AND alarm_type = 'SYSTEM_OFFLINE'
+              AND resolved = 0
+            """,
+            (device_id,),
+        )
+        save_latest_telemetry(conn, device_id, telemetry, commit=False)
+        conn.commit()
+
+        for event in profile_alarm_runtime.get('broadcast_events', []):
+            schedule_broadcast(event, client_id=device.get('client_id'),
+                site_id=device.get('site_id'), building_id=device.get(
+                'building_id'), floor_id=device.get('floor_id'))
+        for system_alarm in newly_triggered_system_alarms:
+            schedule_broadcast({'type': 'ALARM', 'device_id': device_id,
+                'device_name': device.get('label') or device_id, 'rule':
+                'system', 'message': system_alarm, 'telemetry': telemetry},
+                client_id=device.get('client_id'), site_id=device.get(
+                'site_id'), building_id=device.get('building_id'), floor_id
+                =device.get('floor_id'))
         newly_triggered_profile_messages = []
         for alarm in profile_alarm_runtime.get('triggered_alarms', []):
             message = str(alarm.get('message') or '').strip()
@@ -6115,7 +5261,8 @@ def process_ttn_webhook_background(data: dict):
             'profile_alarm_runtime': profile_alarm_runtime,
             'active_profile_alarms': active_profile_alarms, 'system_alarms':
             system_alarms, 'alarms': current_alarm_messages,
-            'telemetry_stored': True}
+            'telemetry_stored': True, 'monitoring_state': 'operational' if
+            commissioned else 'discovery', 'alarms_suppressed': not commissioned}
         if LOCAL_TEST_MODE:
             return {'status': 'ok_local_test_profile_validated', **
                 response_base, 'thingsboard_sent': False, 'note':
@@ -6139,7 +5286,7 @@ def process_ttn_webhook_background(data: dict):
             thingsboard_error = str(exc)
             logger.error('Profile-driven ThingsBoard forwarding failed: %s', exc)
         email_alarms = []
-        for message in (newly_triggered_profile_messages + system_alarms):
+        for message in (newly_triggered_profile_messages + newly_triggered_system_alarms):
             if message and message not in email_alarms:
                 email_alarms.append(message)
         if email_alarms:
@@ -6154,11 +5301,15 @@ def process_ttn_webhook_background(data: dict):
             thingsboard_attribute_status, 'thingsboard_error':
             thingsboard_error}
     except HTTPException as exc:
+        if conn is not None:
+            conn.rollback()
         logger.error('TTN webhook profile context rejected: %s', exc.detail)
         return {'status': 'rejected_profile_context', 'device_id': 
             device_id or None, 'http_status': exc.status_code, 'detail':
             exc.detail, 'telemetry_stored': False, 'thingsboard_sent': False}
     except Exception as exc:
+        if conn is not None:
+            conn.rollback()
         logger.error('TTN webhook error: %s', exc)
         return {'status': 'error', 'device_id': device_id or None,
             'message': str(exc), 'telemetry_stored': False,
@@ -6217,12 +5368,16 @@ def check_offline_devices(conn: sqlite3.Connection, now: datetime | None = None)
             t.alarm_message,
             d.client_id,
             d.site_id,
+            d.building_id,
+            d.floor_id,
             d.node_type,
             d.building,
             d.floor,
             d.room
         FROM device_latest_telemetry t
         LEFT JOIN devices d ON t.device_id = d.device_id
+        WHERE d.is_placed = 1
+          AND d.floor_id IS NOT NULL
     """)
     rows = cursor.fetchall()
     for row in rows:
@@ -6230,13 +5385,8 @@ def check_offline_devices(conn: sqlite3.Connection, now: datetime | None = None)
         updated_at_str = row["updated_at"]
         if not updated_at_str:
             continue
-        try:
-            if "." in updated_at_str:
-                updated_at_str = updated_at_str.split(".")[0]
-            updated_at = datetime.strptime(
-                updated_at_str, "%Y-%m-%d %H:%M:%S"
-            ).replace(tzinfo=timezone.utc)
-        except Exception:
+        updated_at = parse_datetime_safe(updated_at_str)
+        if not updated_at:
             continue
 
         if now - updated_at > timedelta(hours=24):
@@ -6267,9 +5417,21 @@ def check_offline_devices(conn: sqlite3.Connection, now: datetime | None = None)
                     "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 schedule_broadcast(
-                    alert_msg, client_id=row["client_id"], site_id=row["site_id"]
+                    alert_msg,
+                    client_id=row["client_id"],
+                    site_id=row["site_id"],
+                    building_id=row["building_id"],
+                    floor_id=row["floor_id"],
                 )
     conn.commit()
+
+
+def purge_old_telemetry(conn: sqlite3.Connection):
+    try:
+        conn.execute("DELETE FROM historical_telemetry WHERE timestamp <= datetime('now', '-30 days')")
+        conn.commit()
+    except Exception as e:
+        logger.error("Failed to purge old telemetry: %s", e)
 
 
 def run_offline_scan():
@@ -6283,6 +5445,8 @@ def run_offline_scan():
     conn = get_db_connection()
     try:
         check_offline_devices(conn)
+        cleanup_expired_sessions(conn)
+        purge_old_telemetry(conn)
     finally:
         # Previously outside a finally, so every failed scan leaked a
         # connection -- once every 300s, for the life of the process.

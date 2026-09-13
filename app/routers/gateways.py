@@ -155,7 +155,9 @@ def gateways_health(site_id: int | None = None):
                     ip = None
                     error_message = None
 
-            except HTTPException as e:
+            # Any upstream failure (TTN unreachable, DNS, timeout) must mark
+            # this one gateway as errored, not 500 the whole dashboard.
+            except Exception as e:
                 connection_status = "error"
                 last_seen = None
                 protocol = None
@@ -165,7 +167,7 @@ def gateways_health(site_id: int | None = None):
                 uplink_count = 0
                 downlink_count = 0
                 ip = None
-                error_message = str(e.detail)
+                error_message = str(getattr(e, "detail", e))
 
             conn.execute("""
             UPDATE gateways

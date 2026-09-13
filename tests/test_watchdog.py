@@ -15,8 +15,8 @@ def test_watchdog_detects_offline_device(db_conn: sqlite3.Connection):
     db_conn.execute("INSERT OR REPLACE INTO rooms (id, floor_id, room_name, polygon_points, x, y) VALUES (101, 1, 'Room 101', '[]', 0, 0)")
 
     db_conn.execute("""
-        INSERT OR REPLACE INTO devices (chip_mac, device_id, node_type, client_id, site_id, building_id, floor_id, room_id, building, floor, room)
-        VALUES ('11:22:33:44:55:66', 'dev_stale_1', 'environment', 1, 1, 1, 1, 101, 'Building A', 'Floor 1', 'Room 101')
+        INSERT OR REPLACE INTO devices (chip_mac, device_id, node_type, client_id, site_id, building_id, floor_id, room_id, building, floor, room, is_placed)
+        VALUES ('11:22:33:44:55:66', 'dev_stale_1', 'environment', 1, 1, 1, 1, 101, 'Building A', 'Floor 1', 'Room 101', 1)
     """)
 
     old_time = (datetime.now(timezone.utc) - timedelta(hours=25)).strftime("%Y-%m-%d %H:%M:%S")
