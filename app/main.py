@@ -2414,8 +2414,19 @@ def set_device_formatter(device_id: str, node_type: str) ->None:
             safe_json_or_text(resp)})
 
 
+# Cayenne LPP is decoded by the network server's own built-in formatter, which
+# takes no JavaScript at all. A profile using it therefore stores an empty
+# ttn_formatter_code, which is legitimate rather than a misconfiguration.
 TTN_FORMATTER_TYPE_MAP = {'javascript': 'FORMATTER_JAVASCRIPT',
-    'formatter_javascript': 'FORMATTER_JAVASCRIPT'}
+    'formatter_javascript': 'FORMATTER_JAVASCRIPT',
+    'cayenne': 'FORMATTER_CAYENNELPP',
+    'cayenne_lpp': 'FORMATTER_CAYENNELPP',
+    'cayennelpp': 'FORMATTER_CAYENNELPP',
+    'formatter_cayennelpp': 'FORMATTER_CAYENNELPP'}
+
+# Formatter types the network server implements itself; these must be sent
+# without an up_formatter_parameter.
+TTN_BUILTIN_FORMATTER_TYPES = {'FORMATTER_CAYENNELPP'}
 
 
 def normalize_ttn_formatter_type(formatter_type: (str | None)):
@@ -2442,19 +2453,23 @@ def build_profile_formatter_update_payload(device_id: str, formatter_type:
     clean_formatter_code = str(formatter_code or '').strip()
     if not clean_device_id:
         raise HTTPException(status_code=400, detail='device_id is required')
-    if not clean_formatter_code:
-        raise HTTPException(status_code=400, detail=
-            'Profile TTN formatter code is empty')
-    if 'decodeUplink' not in clean_formatter_code:
-        raise HTTPException(status_code=400, detail=
-            'Profile TTN formatter must contain decodeUplink')
     normalized_formatter_type = normalize_ttn_formatter_type(formatter_type)
+    builtin = normalized_formatter_type in TTN_BUILTIN_FORMATTER_TYPES
+    if not builtin:
+        if not clean_formatter_code:
+            raise HTTPException(status_code=400, detail=
+                'Profile TTN formatter code is empty')
+        if 'decodeUplink' not in clean_formatter_code:
+            raise HTTPException(status_code=400, detail=
+                'Profile TTN formatter must contain decodeUplink')
+    # A built-in formatter is selected by name; sending a parameter alongside
+    # it is rejected by the Application Server, so the field is cleared.
     return {'end_device': {'ids': {'device_id': clean_device_id,
         'application_ids': {'application_id': APP_ID}}, 'formatters': {
         'up_formatter': normalized_formatter_type, 'up_formatter_parameter':
-        clean_formatter_code}}, 'field_mask': {'paths': ['ids.device_id',
-        'ids.application_ids.application_id', 'formatters.up_formatter',
-        'formatters.up_formatter_parameter']}}
+        '' if builtin else clean_formatter_code}}, 'field_mask': {'paths': [
+        'ids.device_id', 'ids.application_ids.application_id',
+        'formatters.up_formatter', 'formatters.up_formatter_parameter']}}
 
 
 def set_device_formatter_from_profile(device_id: str, profile: dict):
@@ -2471,6 +2486,15 @@ def set_device_formatter_from_profile(device_id: str, profile: dict):
     profile_version = int(profile.get('profile_version') or 0)
     formatter_type = str(profile.get('ttn_formatter_type') or '').strip()
     formatter_code = str(profile.get('ttn_formatter_code') or '').strip()
+    encoder_key = str(profile.get('payload_encoder_key') or '').strip().lower()
+    # A Cayenne LPP profile ships no JavaScript because the network server
+    # decodes the format natively. Without this, registering such a device
+    # fails on an empty formatter and leaves it half-created in TTN.
+    if not formatter_code and (
+        encoder_key.startswith('cayenne')
+        or formatter_type.lower() in ('', 'none', 'cayenne', 'cayenne_lpp')
+    ):
+        formatter_type = 'cayenne_lpp'
     if not profile_code:
         raise HTTPException(status_code=400, detail='Profile code is missing')
     if profile_version <= 0:
@@ -2496,16 +2520,49 @@ def register_device_in_ttn(device_id: str, dev_eui: str, join_eui: str,
     """
     Register a new end device in every required TTN component and
     install the uplink formatter stored in its sensor profile.
+
+    Registration spans four components plus a formatter update, and TTN offers
+    no transaction across them. A failure partway used to leave a half-created
+    device that could neither join nor be registered again: the retry got
+    409 id_taken from the identity that had already been written. Anything
+    created here is therefore removed again if a later stage fails, so a retry
+    starts from a clean slate.
     """
     if not isinstance(profile, dict):
         raise HTTPException(status_code=400, detail=
             'A validated sensor profile is required for TTN registration')
-    create_ttn_device_identity(device_id, dev_eui, join_eui)
-    set_ttn_join_server(device_id, dev_eui, join_eui, app_key)
-    set_ttn_network_server(device_id, dev_eui, join_eui)
-    set_ttn_application_server(device_id, dev_eui, join_eui)
-    formatter_result = set_device_formatter_from_profile(device_id=
-        device_id, profile=profile)
+
+    try:
+        create_ttn_device_identity(device_id, dev_eui, join_eui)
+    except requests.HTTPError as error:
+        response = getattr(error, 'response', None)
+        if response is not None and response.status_code == 409:
+            raise HTTPException(status_code=409, detail={'stage':
+                'device_identity', 'message':
+                'Device is already registered in TTN',
+                'device_id': device_id, 'dev_eui': dev_eui}) from error
+        raise
+
+    try:
+        set_ttn_join_server(device_id, dev_eui, join_eui, app_key)
+        set_ttn_network_server(device_id, dev_eui, join_eui)
+        set_ttn_application_server(device_id, dev_eui, join_eui)
+        formatter_result = set_device_formatter_from_profile(device_id=
+            device_id, profile=profile)
+    except Exception:
+        try:
+            ttn_client.delete_device(device_id)
+            logger.info(
+                'Rolled back partial TTN registration for %s', device_id)
+        except Exception as cleanup_error:
+            # Surfaced rather than swallowed: the device is now half-created
+            # and a human has to remove it before registration can succeed.
+            logger.error(
+                'Could not roll back partial TTN registration for %s: %s. '
+                'Delete it in the TTN console before retrying.',
+                device_id, cleanup_error)
+        raise
+
     return {'status': 'registered', 'device_id': device_id, 'profile_code':
         profile['profile_code'], 'profile_version': profile[
         'profile_version'], 'formatter': formatter_result}
@@ -5326,6 +5383,7 @@ from app.routers.auth import router as auth_router
 from app.routers.client_portal import router as client_portal_router
 from app.routers.clients import router as clients_router
 from app.routers.devices import router as devices_router
+from app.routers.enrollment import router as enrollment_router
 from app.routers.firmware import router as firmware_router
 from app.routers.gateways import router as gateways_router
 from app.routers.hierarchy import router as hierarchy_router
@@ -5350,6 +5408,7 @@ app.include_router(alarms_router)
 app.include_router(client_portal_router)
 app.include_router(admin_router)
 app.include_router(audit_router)
+app.include_router(enrollment_router)
 app.include_router(root_router)
 app.include_router(pages_router)
 app.include_router(webhooks_router)
