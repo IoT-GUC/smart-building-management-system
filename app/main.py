@@ -32,6 +32,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.schemas.core import Device, ProfileAlarmTemplateValues
+from app.services.device_label import (
+    LABEL_F_PORT,
+    is_label_port,
+    parse_label_uplink,
+)
 from app.services.device_state import build_device_state
 from app.services.export_safety import redact_secrets
 from app.services.thingsboard import tb_client
@@ -4078,6 +4083,45 @@ PROFILE_SYSTEM_TELEMETRY_FIELDS = {'battery_percent', 'battery_voltage',
     'power_source', 'firmware_version', 'payload_version'}
 
 
+def apply_device_label_uplink(conn, device: dict, frm_payload) -> dict:
+    """
+    Store a nickname sent by a device over LoRa.
+
+    The nickname is cosmetic: identity stays the DevEUI, and nothing about
+    routing, placement or telemetry depends on it. It exists so a person
+    looking at the discovery inbox can tell which physical box is which.
+    """
+    device_id = device.get('device_id')
+    label = parse_label_uplink(frm_payload)
+    if not label:
+        logger.info(
+            'Ignored unusable nickname uplink from %s on port %s',
+            device_id, LABEL_F_PORT)
+        return {'status': 'label_rejected', 'device_id': device_id,
+            'telemetry_stored': False, 'thingsboard_sent': False}
+
+    previous = str(device.get('label') or '')
+    if previous == label:
+        return {'status': 'label_unchanged', 'device_id': device_id,
+            'label': label, 'telemetry_stored': False,
+            'thingsboard_sent': False}
+
+    conn.execute(
+        'UPDATE devices SET label = ?, updated_at = CURRENT_TIMESTAMP'
+        ' WHERE device_id = ?', (label, device_id))
+    conn.commit()
+    try:
+        log_audit_event(conn, action='device_label_from_uplink',
+            target_type='device', target_id=device_id, actor='lora',
+            details={'label': label, 'previous': previous})
+    except Exception as exc:
+        logger.info('Nickname audit write failed for %s: %s', device_id, exc)
+
+    logger.info('Device %s named "%s" over the air', device_id, label)
+    return {'status': 'label_applied', 'device_id': device_id,
+        'label': label, 'telemetry_stored': False, 'thingsboard_sent': False}
+
+
 def auto_provision_discovered_device(conn: sqlite3.Connection, device_id: str, raw_envelope: dict | None = None) -> dict:
     """
     Zero-touch auto-provisioning for newly detected LoRaWAN devices.
@@ -5149,6 +5193,14 @@ def process_ttn_webhook_background(data: dict):
         conn = db()
         context = load_device_profile_context_for_webhook(conn, device_id, raw_envelope=data)
         device = context['device']
+
+        # A nickname uplink carries no telemetry: it exists so an installer can
+        # tell fifty identical boards apart. Cayenne cannot decode it, so it
+        # arrives with frm_payload and no decoded_payload, and it is handled
+        # here and returned rather than being run through profile validation.
+        if is_label_port(uplink_message.get('f_port')):
+            return apply_device_label_uplink(
+                conn, device, uplink_message.get('frm_payload'))
         # The DevEUI is the stable radio identity. If TTN's human-readable
         # device ID changed, continue under the existing backend record.
         device_id = device['device_id']
