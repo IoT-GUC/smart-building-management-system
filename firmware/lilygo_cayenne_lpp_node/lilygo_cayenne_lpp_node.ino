@@ -31,6 +31,7 @@
 #include <esp_mac.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
+#include <Preferences.h>
 
 // Optional: Adafruit SHT31 (I2C SDA=21, SCL=22)
 // #include <Adafruit_SHT31.h>
@@ -109,6 +110,37 @@ CayenneLPP lpp(51); // 51 bytes buffer
 // decoder you have confirmed supports them (a custom JavaScript formatter, or
 // ChirpStack).
 #define DUMMY_EXTENDED_TYPES 0
+
+// ------------------------------------------------------------------------------
+// DEVICE NICKNAME
+// ------------------------------------------------------------------------------
+// Fifty identical boards are indistinguishable in the cloud's discovery inbox:
+// each is identified by a DevEUI derived from its chip MAC, which says nothing
+// about where it was mounted. A nickname fixes that for humans. It changes
+// nothing about identity -- the device is still addressed by its DevEUI.
+//
+// Set it over USB serial at 115200 baud, at any time, by typing:
+//
+//     nick temp_c_floor3_308
+//
+// It is stored in flash and survives reboots and reflashes. "nick" on its own
+// prints the current one; "nick -" clears it.
+//
+// Cayenne LPP has no string type, so the nickname cannot share the sensor
+// payload; it is sent as its own uplink on LORA_PORT_NICKNAME, which the cloud
+// reads straight from the raw frame.
+#define LORA_PORT_DATA      1
+#define LORA_PORT_NICKNAME 10
+#define NICKNAME_MAX_LENGTH 48
+
+// Re-send the nickname periodically so a single missed uplink is not permanent.
+// The cloud ignores an unchanged one, so this costs nothing but airtime.
+#define NICKNAME_REFRESH_UPLINKS 60
+
+Preferences preferences;
+static char nickname[NICKNAME_MAX_LENGTH + 1] = "";
+static bool nicknameUplinkPending = false;
+static uint16_t uplinksSinceNickname = 0;
 
 #define PIN_PIR_MOTION  13  // Motion or door contact digital input
 #define PIN_BATTERY_ADC 35  // Battery ADC voltage divider pin
@@ -197,6 +229,81 @@ float readBatteryVoltage() {
     return voltage;
 }
 
+void loadNickname() {
+    preferences.begin("sbms", /*readOnly=*/true);
+    String stored = preferences.getString("nick", "");
+    preferences.end();
+    stored.trim();
+    stored.toCharArray(nickname, sizeof(nickname));
+    if (strlen(nickname)) {
+        Serial.print(F("[INFO] Device nickname: "));
+        Serial.println(nickname);
+        nicknameUplinkPending = true;
+    } else {
+        Serial.println(F("[INFO] No nickname set. Type: nick <name>"));
+    }
+}
+
+void saveNickname(const String& value) {
+    String clean = value;
+    clean.trim();
+    if (clean.length() > NICKNAME_MAX_LENGTH) {
+        clean = clean.substring(0, NICKNAME_MAX_LENGTH);
+        Serial.print(F("[WARN] Nickname truncated to "));
+        Serial.print(NICKNAME_MAX_LENGTH);
+        Serial.println(F(" characters."));
+    }
+
+    preferences.begin("sbms", /*readOnly=*/false);
+    if (clean == "-") {
+        preferences.remove("nick");
+        nickname[0] = '\0';
+        Serial.println(F("[OK] Nickname cleared."));
+    } else {
+        preferences.putString("nick", clean);
+        clean.toCharArray(nickname, sizeof(nickname));
+        Serial.print(F("[OK] Nickname saved: "));
+        Serial.println(nickname);
+        // Send it at the next opportunity rather than waiting for the refresh.
+        nicknameUplinkPending = true;
+    }
+    preferences.end();
+#if ENABLE_OLED
+    displayDirty = true;
+#endif
+}
+
+// Read "nick <name>" from the serial console. Non-blocking: the LMIC run loop
+// must keep being serviced, so this never waits for input.
+void pollSerialConsole() {
+    static String line;
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\r') continue;
+        if (c != '\n') {
+            if (line.length() < 120) line += c;
+            continue;
+        }
+        String command = line;
+        line = "";
+        command.trim();
+        if (!command.startsWith("nick")) {
+            if (command.length()) {
+                Serial.println(F("[?] Commands: nick <name> | nick | nick -"));
+            }
+            continue;
+        }
+        String argument = command.substring(4);
+        argument.trim();
+        if (!argument.length()) {
+            Serial.print(F("[INFO] Nickname: "));
+            Serial.println(strlen(nickname) ? nickname : "(none)");
+            continue;
+        }
+        saveNickname(argument);
+    }
+}
+
 // A small bounded random walk. Simulated values drift like a real sensor
 // instead of jumping randomly, so the dashboard graphs and the alarm
 // thresholds get something realistic to work against.
@@ -224,8 +331,10 @@ static void renderDisplay() {
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
 
+    // The nickname is the whole point of having one, so it takes the title
+    // line when set; otherwise the generic name stands in.
     display.setCursor(0, 0);
-    display.println(F("SBMS LoRaWAN Node"));
+    display.println(strlen(nickname) ? nickname : "SBMS LoRaWAN Node");
     display.drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
 
     // The DevEUI you need in order to register this board.
@@ -271,6 +380,21 @@ static void renderDisplay() {
 void do_send(osjob_t* j) {
     if (LMIC.opmode & OP_TXRXPEND) {
         Serial.println(F("[LMIC] OP_TXRXPEND, not sending now"));
+        return;
+    }
+
+    // The nickname goes out as its own uplink on its own port. It carries no
+    // sensor data, and the cloud handles it before profile validation, so it
+    // never displaces a reading. One data uplink is skipped in its favour;
+    // the next one follows on the normal schedule.
+    if (nicknameUplinkPending && strlen(nickname)) {
+        nicknameUplinkPending = false;
+        LMIC_setTxData2(LORA_PORT_NICKNAME, (uint8_t*)nickname,
+                        strlen(nickname), 0);
+        Serial.print(F("[TX] Nickname uplink on port "));
+        Serial.print(LORA_PORT_NICKNAME);
+        Serial.print(F(": "));
+        Serial.println(nickname);
         return;
     }
 
@@ -390,8 +514,7 @@ void do_send(osjob_t* j) {
     Serial.println(F(" V"));
 #endif
 
-    // Prepare transmission on LoRaWAN Port 1
-    LMIC_setTxData2(1, lpp.getBuffer(), lpp.getSize(), 0);
+    LMIC_setTxData2(LORA_PORT_DATA, lpp.getBuffer(), lpp.getSize(), 0);
 }
 
 void onEvent (ev_t ev) {
@@ -423,6 +546,8 @@ void onEvent (ev_t ev) {
             LMIC_setDrTxpow(DR_SF7, 14);
             Serial.println(F("[BENCH] ADR off, data rate pinned to SF7 for short-range testing."));
 #endif
+            // Announce the nickname as soon as there is a session to send it on.
+            nicknameUplinkPending = strlen(nickname) > 0;
 #if ENABLE_OLED
             joinState = "JOINED";
             displayDirty = true;
@@ -463,6 +588,12 @@ void onEvent (ev_t ev) {
             break;
         case EV_TXCOMPLETE:
             Serial.println(F("EV_TXCOMPLETE (Uplink delivered successfully)"));
+            // Re-send the nickname occasionally so a missed uplink is not
+            // permanent. An unchanged nickname is a no-op at the other end.
+            if (++uplinksSinceNickname >= NICKNAME_REFRESH_UPLINKS) {
+                uplinksSinceNickname = 0;
+                nicknameUplinkPending = strlen(nickname) > 0;
+            }
 #if ENABLE_OLED
             uplinkCount++;
             joinState = "ONLINE";
@@ -522,6 +653,8 @@ void setup() {
     // identical on every boot.
     randomSeed(esp_random());
 
+    loadNickname();
+
     // Initialize Unique Hardware DevEUI from ESP32 MAC
     if (!initUniqueDevEUI()) {
         while (true) {
@@ -564,6 +697,7 @@ void setup() {
 
 void loop() {
     os_runloop_once();
+    pollSerialConsole();
 
 #if ENABLE_OLED
     // Refresh at most every 250 ms, and never while a transmission or receive
