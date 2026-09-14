@@ -49,5 +49,30 @@ class Settings(BaseSettings):
     # devices are unaffected; only new discoveries are refused at the cap.
     MAX_UNPLACED_DISCOVERED_DEVICES: int = 500
 
+    # --- Over-the-air enrollment ------------------------------------------
+    # A node whose DevEUI the network has never seen cannot join, and cannot
+    # therefore be discovered by the webhook. Enrollment closes that gap: the
+    # app watches gateway traffic for join requests, and registers a DevEUI in
+    # TTN once the request's MIC proves the sender already holds this
+    # deployment's shared AppKey.
+    #
+    # Off by default, and an open window is deliberately not persisted -- a
+    # restart closes it, so the system fails closed.
+    AUTO_ENROLLMENT_ENABLED: bool = False
+    # How long a window stays open once an administrator opens one.
+    AUTO_ENROLLMENT_WINDOW_SECONDS: int = 600
+    # Registrations allowed per window, so one open window cannot be used to
+    # flood the TTN device registry.
+    AUTO_ENROLLMENT_MAX_PER_WINDOW: int = 10
+    # Gateways whose traffic is watched. Empty means every gateway in the
+    # gateways table.
+    AUTO_ENROLLMENT_GATEWAY_IDS: str = ""
+    # Enrollment reads gateway *traffic* events, which are a different scope
+    # from the application rights TTN_API_KEY carries: an application-scoped
+    # key silently receives only status events, never uplinks. Mint a key with
+    # RIGHT_GATEWAY_READ_TRAFFIC on the gateway and set it here. Falls back to
+    # TTN_API_KEY, which works only if that key happens to be gateway-scoped.
+    AUTO_ENROLLMENT_GATEWAY_API_KEY: str = ""
+
 
 settings = Settings()
