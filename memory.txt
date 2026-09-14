@@ -236,6 +236,11 @@ Each of these caused a real defect. Preserve them.
      CONTENTS from the cache key, so a separate CA step built once without the secret caches
      as a no-op and silently breaks every later build. Do not split them apart again.
    - TTN_WEBHOOK_SECRET must be set to a real value or ALL telemetry ingestion returns 503.
+   - templates/ and static/ are COPYied into the image, so an edit does NOT appear until a
+     rebuild. docker-compose.override.yml mounts both read-only for local dev (Compose merges
+     it automatically) and they then hot-reload per request. Deploy with
+     `docker compose -f docker-compose.yml up -d --build` to EXCLUDE the override.
+     Python changes always need a rebuild.
 
 --------------------------------------------------------------------------------
 6. VERIFICATION & QUALITY STANDARDS

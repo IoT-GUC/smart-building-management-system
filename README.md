@@ -141,6 +141,29 @@ restarts and rebuilds in the `sbms-data` named Docker volume (mounted at
 `/app/data` inside the container); uploaded files persist in the `./uploads`
 bind mount. The container runs as an unprivileged, non-root user (uid 1000).
 
+### Editing templates and static files
+
+`templates/` and `static/` are baked into the image by `COPY`, so a plain
+`docker compose up -d` would need `--build` before an edit shows up.
+`docker-compose.override.yml` mounts both read-only for local development, and
+Compose merges it automatically:
+
+```bash
+docker compose up -d
+```
+
+Edits then appear on the next request -- no rebuild, no restart (Jinja2
+auto-reloads templates, and StaticFiles reads from disk per request). Hard-refresh
+the browser (Ctrl+Shift+R) if a page looks stale; a service worker is registered.
+
+Deploy **without** the override so the image stays self-contained:
+
+```bash
+docker compose -f docker-compose.yml up -d --build
+```
+
+Python code changes still need a rebuild either way.
+
 ### Networks that intercept TLS
 
 The build fetches packages from PyPI, so on a network with a TLS-inspecting
