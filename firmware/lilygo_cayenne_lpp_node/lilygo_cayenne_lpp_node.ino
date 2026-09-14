@@ -15,7 +15,8 @@
  *
  * REQUIRED ARDUINO LIBRARIES (Install via Arduino Library Manager):
  *  - "MCCI LoRaWAN LMIC library" by IBM, Matthijs Kooijman, Terry Moore
- *  - "CayenneLPP" by ElectronicCats
+ *  - "CayenneLPP" by ElectronicCats (v1.1+, for the extended LPP types)
+ *  - "Adafruit SSD1306" and "Adafruit GFX Library" (onboard OLED)
  *  - "Adafruit SHT31 Library" (Optional, for SHT30/SHT31 Temp & Humidity)
  * ==============================================================================
  */
@@ -28,6 +29,8 @@
 #include <Wire.h>
 #include <CayenneLPP.h>
 #include <esp_mac.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 // Optional: Adafruit SHT31 (I2C SDA=21, SCL=22)
 // #include <Adafruit_SHT31.h>
@@ -76,7 +79,12 @@ const lmic_pinmap lmic_pins = {
 // ==============================================================================
 // 3. HARDWARE CONFIGURATION & INTERVALS
 // ==============================================================================
-const unsigned TX_INTERVAL_SECONDS = 60; // Uplink interval (e.g. 60 to 300 seconds)
+// Bench testing: 30 s so changes show up quickly. The 25-byte payload is
+// ~62 ms of airtime at SF7, so 30 s is 0.21% duty cycle -- well inside the
+// EU868 1% limit. Raise to 300+ for a deployed battery node, and note that
+// The Things Network's public cloud fair-use budget (30 s airtime/day)
+// would not tolerate this rate; a local stack has no such limit.
+const unsigned TX_INTERVAL_SECONDS = 30;
 static osjob_t sendjob;
 CayenneLPP lpp(51); // 51 bytes buffer
 
@@ -90,18 +98,56 @@ CayenneLPP lpp(51); // 51 bytes buffer
 // Set it back to 0 once real sensors are attached.
 #define DUMMY_SENSORS 1
 
-// Channels 9-11 use the EXTENDED Cayenne LPP types (current / power /
-// concentration). Channels 1-8 use the classic types every decoder supports.
-// If TTN's Live Data tab shows channels 9-11 arriving undecoded, set this to 0:
-// you still get 8 populated channels, and the payload drops to 29 bytes.
-#define DUMMY_EXTENDED_TYPES 1
+// Cayenne LPP defines more data types than most decoders implement. The
+// Things Stack's built-in decoder handles only the standard set, and it
+// rejects the WHOLE payload -- logging "cayennelpp: invalid output" and
+// producing no decoded_payload at all -- if it meets even one type it does not
+// know. It is not a partial decode.
+//
+// Setting this to 1 adds voltage, current, power and concentration. Leave it
+// at 0 for The Things Stack's built-in formatter; turn it on only with a
+// decoder you have confirmed supports them (a custom JavaScript formatter, or
+// ChirpStack).
+#define DUMMY_EXTENDED_TYPES 0
 
 #define PIN_PIR_MOTION  13  // Motion or door contact digital input
 #define PIN_BATTERY_ADC 35  // Battery ADC voltage divider pin
 
-void initUniqueDevEUI() {
+// ------------------------------------------------------------------------------
+// ONBOARD OLED (SSD1306 128x64 over I2C)
+// ------------------------------------------------------------------------------
+// Set to 0 to compile the display out entirely.
+#define ENABLE_OLED 1
+
+#define OLED_WIDTH   128
+#define OLED_HEIGHT   64
+#define OLED_ADDRESS 0x3C  // Standard address for the TTGO onboard SSD1306
+#define OLED_SDA       21  // ESP32 default I2C pins, which this board uses
+#define OLED_SCL       22
+#define OLED_RESET     -1  // No dedicated reset line on this board
+
+#if ENABLE_OLED
+Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, OLED_RESET);
+static bool oledReady = false;
+
+// Snapshot of what the screen should show. Written from the LMIC callbacks and
+// from do_send(), which must stay fast -- rendering happens later, in loop().
+static char     devEuiText[17] = "................";
+static const char *joinState   = "BOOTING";
+static uint32_t uplinkCount    = 0;
+static uint16_t lastPayloadLen = 0;
+static float    lastTemp       = 0.0f;
+static float    lastHum        = 0.0f;
+static float    lastVbat       = 0.0f;
+static bool     displayDirty   = true;
+#endif
+
+bool initUniqueDevEUI() {
     uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+        Serial.println(F("[FATAL] Could not read the ESP32 hardware MAC; DevEUI was not generated."));
+        return false;
+    }
 
     // Form an IEEE EUI-64: [MAC0, MAC1, MAC2, 0xFF, 0xFE, MAC3, MAC4, MAC5]
     // Stored Little-Endian for LMIC:
@@ -128,6 +174,17 @@ void initUniqueDevEUI() {
         if (i > 0) Serial.print(":");
     }
     Serial.println();
+
+#if ENABLE_OLED
+    // Same MSB order as the serial line, without separators so all 16 hex
+    // characters fit one 21-character OLED row. This is the value you register
+    // in The Things Stack, so showing it on screen saves needing a serial cable.
+    for (int i = 0; i < 8; i++) {
+        snprintf(&devEuiText[i * 2], 3, "%02X", DEVEUI[7 - i]);
+    }
+    displayDirty = true;
+#endif
+    return true;
 }
 
 float readBatteryVoltage() {
@@ -150,6 +207,67 @@ static float drift(float value, float step, float low, float high) {
     return value;
 }
 
+#if ENABLE_OLED
+// EU868 maps DR0..DR5 onto SF12..SF7.
+static uint8_t currentSpreadingFactor() {
+    uint8_t dr = LMIC.datarate;
+    return (dr <= 5) ? (12 - dr) : 0;
+}
+
+// Redraw the status screen. Called only from loop(), never from an LMIC
+// callback: pushing the 1 KB framebuffer over I2C takes long enough that doing
+// it inside a callback risks missing an RX window.
+static void renderDisplay() {
+    if (!oledReady) return;
+
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+
+    display.setCursor(0, 0);
+    display.println(F("SBMS LoRaWAN Node"));
+    display.drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+
+    // The DevEUI you need in order to register this board.
+    display.setCursor(0, 14);
+    display.print(F("EUI "));
+    display.println(devEuiText);
+
+    display.setCursor(0, 25);
+    display.print(F("State "));
+    display.println(joinState);
+
+    display.setCursor(0, 35);
+    display.print(F("TX "));
+    display.print(uplinkCount);
+    display.print(F("  "));
+    display.print(lastPayloadLen);
+    display.print(F("B"));
+    uint8_t sf = currentSpreadingFactor();
+    if (sf) {
+        display.print(F("  SF"));
+        display.print(sf);
+    }
+
+    display.drawFastHLine(0, 45, OLED_WIDTH, SSD1306_WHITE);
+
+    display.setCursor(0, 49);
+    display.print(lastTemp, 1);
+    display.print(F("C "));
+    display.print(lastHum, 0);
+    display.print(F("% "));
+    display.print(lastVbat, 2);
+    display.print(F("V"));
+
+#if DUMMY_SENSORS
+    display.setCursor(0, 57);
+    display.print(F("SIMULATED DATA"));
+#endif
+
+    display.display();
+}
+#endif
+
 void do_send(osjob_t* j) {
     if (LMIC.opmode & OP_TXRXPEND) {
         Serial.println(F("[LMIC] OP_TXRXPEND, not sending now"));
@@ -171,9 +289,11 @@ void do_send(osjob_t* j) {
     static float lux      = 420.0f;  // -> lux
     static float pressure = 1013.0f; // -> pressure
     static float analogIn = 6.5f;    // -> analog_in
+#if DUMMY_EXTENDED_TYPES
     static float current  = 0.65f;   // -> current
     static float power    = 145.0f;  // -> power
     static float co2      = 620.0f;  // -> co2
+#endif
 
     temp     = drift(temp,     0.4f,  18.0f,   28.0f);
     hum      = drift(hum,      1.5f,  30.0f,   70.0f);
@@ -181,30 +301,42 @@ void do_send(osjob_t* j) {
     lux      = drift(lux,     40.0f,   0.0f, 2000.0f);
     pressure = drift(pressure, 0.8f, 980.0f, 1040.0f);
     analogIn = drift(analogIn, 0.3f,   0.0f,   10.0f);
+#if DUMMY_EXTENDED_TYPES
     current  = drift(current,  0.05f,  0.0f,    2.0f);
     power    = drift(power,    8.0f,   0.0f,  500.0f);
     co2      = drift(co2,     35.0f, 400.0f, 1800.0f);
+#endif
 
     // Motion trips roughly 1 uplink in 4; the door contact roughly 1 in 8.
     uint8_t motion   = (random(0, 4) == 0) ? 1 : 0;   // -> motion
     uint8_t doorOpen = (random(0, 8) == 0) ? 1 : 0;   // -> digital_in
 
-    // Classic Cayenne LPP types -- decoded by every LPP implementation.
+    // Standard Cayenne LPP types. Every decoder implements these, including
+    // The Things Stack's built-in one. 25 bytes total.
     lpp.addTemperature(1, temp);
     lpp.addRelativeHumidity(2, hum);
     lpp.addPresence(3, motion);
-    lpp.addVoltage(4, vbat);
     lpp.addLuminosity(5, (uint16_t)lux);
     lpp.addBarometricPressure(6, pressure);
     lpp.addAnalogInput(7, analogIn);
     lpp.addDigitalInput(8, doorOpen);
 
 #if DUMMY_EXTENDED_TYPES
-    // Extended Cayenne LPP types. Confirm these decode on TTN before relying
-    // on them; if they do not, set DUMMY_EXTENDED_TYPES to 0.
+    // Extended types. Channel 4 is battery voltage, which is as unsupported by
+    // the built-in decoder as channels 9-11 are, so it lives here rather than
+    // above. Adds 16 bytes.
+    lpp.addVoltage(4, vbat);
     lpp.addCurrent(9, current);
     lpp.addPower(10, (uint16_t)power);
     lpp.addConcentration(11, (uint16_t)co2);
+#endif
+
+#if ENABLE_OLED
+    lastTemp = temp;
+    lastHum  = hum;
+    lastVbat = vbat;
+    lastPayloadLen = lpp.getSize();
+    displayDirty = true;
 #endif
 
     Serial.print(F("[TX] SIMULATED Cayenne LPP packet queued: "));
@@ -239,6 +371,14 @@ void do_send(osjob_t* j) {
     float vbat = readBatteryVoltage();
     lpp.addVoltage(4, vbat);
 
+#if ENABLE_OLED
+    lastTemp = temp;
+    lastHum  = hum;
+    lastVbat = vbat;
+    lastPayloadLen = lpp.getSize();
+    displayDirty = true;
+#endif
+
     Serial.print(F("[TX] Cayenne LPP packet queued: "));
     Serial.print(lpp.getSize());
     Serial.print(F(" bytes | Temp: "));
@@ -261,13 +401,18 @@ void onEvent (ev_t ev) {
     switch(ev) {
         case EV_JOINING:
             Serial.println(F("EV_JOINING (Sending OTAA Join Request over LoRa...)"));
+#if ENABLE_OLED
+            joinState = "JOINING";
+            displayDirty = true;
+#endif
             break;
         case EV_JOINED:
             Serial.println(F("EV_JOINED! Device is connected to LoRaWAN Gateway!"));
             // Disable link check validation once joined
             LMIC_setLinkCheckMode(0);
 #if DUMMY_SENSORS
-            // The simulated payload is 41 bytes. At SF12 that is ~1.8 s of
+            // The simulated payload is 25 bytes (41 with extended types). At
+            // SF12 even the smaller one is ~1.2 s of
             // airtime per uplink, which the EU868 1% duty cycle and TTN's
             // 30 s/day fair-use budget cannot sustain at TX_INTERVAL_SECONDS.
             // Bench testing is done next to the gateway, so pin the fastest
@@ -278,12 +423,51 @@ void onEvent (ev_t ev) {
             LMIC_setDrTxpow(DR_SF7, 14);
             Serial.println(F("[BENCH] ADR off, data rate pinned to SF7 for short-range testing."));
 #endif
+#if ENABLE_OLED
+            joinState = "JOINED";
+            displayDirty = true;
+#endif
             break;
         case EV_JOIN_FAILED:
             Serial.println(F("EV_JOIN_FAILED. Check AppKey / Gateway signal."));
+#if ENABLE_OLED
+            joinState = "JOIN FAIL";
+            displayDirty = true;
+#endif
+            break;
+        case EV_JOIN_TXCOMPLETE:
+            // The join request went out but no join-accept came back. This is
+            // the useful one: it separates "no gateway heard me" from "a
+            // gateway heard me but the JoinEUI/AppKey did not match".
+            Serial.println(F("EV_JOIN_TXCOMPLETE (Join request sent, no JoinAccept received)"));
+#if ENABLE_OLED
+            joinState = "NO ACCEPT";
+            displayDirty = true;
+#endif
+            break;
+        case EV_TXSTART:
+            // Fired by MCCI LMIC as the radio keys up, once per uplink. Not an
+            // error -- it simply has no case in most example sketches, which is
+            // why it shows up as "Unknown event: 17".
+            Serial.println(F("EV_TXSTART (Radio transmitting...)"));
+            break;
+        case EV_TXCANCELED:
+            // A queued transmission was dropped before it went out, usually
+            // because the duty-cycle budget for the sub-band was exhausted.
+            Serial.println(F("EV_TXCANCELED (Transmission aborted before sending)"));
+            break;
+        case EV_RXSTART:
+            // Fires twice per uplink, opening the RX1 and RX2 windows. Comment
+            // this line out if it makes the serial log too noisy.
+            Serial.println(F("EV_RXSTART (Opening receive window)"));
             break;
         case EV_TXCOMPLETE:
             Serial.println(F("EV_TXCOMPLETE (Uplink delivered successfully)"));
+#if ENABLE_OLED
+            uplinkCount++;
+            joinState = "ONLINE";
+            displayDirty = true;
+#endif
             // Schedule next uplink after TX_INTERVAL_SECONDS
             os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(TX_INTERVAL_SECONDS), do_send);
             break;
@@ -307,6 +491,26 @@ void setup() {
     Serial.println(F("  Smart Building Management System - LoRaWAN Node"));
     Serial.println(F("======================================================="));
 
+#if ENABLE_OLED
+    // Bring the screen up before anything else can fail, so a fatal error in
+    // setup() is visible without a serial cable attached.
+    Wire.begin(OLED_SDA, OLED_SCL);
+    oledReady = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS,
+                              /*reset=*/true, /*periphBegin=*/false);
+    if (!oledReady) {
+        Serial.println(F("[WARN] SSD1306 not found; continuing without the display."));
+    } else {
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setTextColor(SSD1306_WHITE);
+        display.setCursor(0, 0);
+        display.println(F("SBMS LoRaWAN Node"));
+        display.println();
+        display.println(F("Starting up..."));
+        display.display();
+    }
+#endif
+
     // Disable Wi-Fi and Bluetooth radios completely to conserve battery
     WiFi.mode(WIFI_OFF);
     btStop();
@@ -319,7 +523,11 @@ void setup() {
     randomSeed(esp_random());
 
     // Initialize Unique Hardware DevEUI from ESP32 MAC
-    initUniqueDevEUI();
+    if (!initUniqueDevEUI()) {
+        while (true) {
+            delay(1000);
+        }
+    }
 
     // Initialize the radio bus explicitly. The TTGO LoRa32 does not use the
     // ESP32 default VSPI MISO/MOSI mapping.
@@ -329,6 +537,17 @@ void setup() {
     // SX1276 cannot be initialized.
     if (!os_init_ex((const void*)&lmic_pins)) {
         Serial.println(F("[FATAL] SX1276 initialization failed. Check board revision and LoRa pins."));
+#if ENABLE_OLED
+        if (oledReady) {
+            display.clearDisplay();
+            display.setCursor(0, 0);
+            display.println(F("LoRa INIT FAILED"));
+            display.println();
+            display.println(F("Check board revision"));
+            display.println(F("and SX1276 pins."));
+            display.display();
+        }
+#endif
         while (true) {
             delay(1000);
         }
@@ -345,4 +564,17 @@ void setup() {
 
 void loop() {
     os_runloop_once();
+
+#if ENABLE_OLED
+    // Refresh at most every 250 ms, and never while a transmission or receive
+    // window is pending -- os_runloop_once() has to be serviced promptly, and
+    // the I2C framebuffer push is comparatively slow.
+    static unsigned long lastRender = 0;
+    if (displayDirty && !(LMIC.opmode & OP_TXRXPEND)
+        && (millis() - lastRender) > 250) {
+        lastRender = millis();
+        displayDirty = false;
+        renderDisplay();
+    }
+#endif
 }
