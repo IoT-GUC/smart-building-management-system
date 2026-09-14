@@ -32,7 +32,9 @@ def test_runtime_dependencies_are_pinned():
 
 
 def test_firmware_uses_generated_shared_credentials():
-    firmware = (ROOT / "firmware/lilygo_cayenne_lpp_node.ino").read_text(
+    firmware = (
+        ROOT / "firmware/lilygo_cayenne_lpp_node/lilygo_cayenne_lpp_node.ino"
+    ).read_text(
         encoding="utf-8"
     )
     assert '#include "lorawan_credentials.h"' in firmware

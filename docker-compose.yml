@@ -21,6 +21,9 @@ services:
     environment:
       - DB_FILE=/app/data/smarthome.db
       - LOCAL_TEST_MODE=false
+      # The Windows host exposes the local Things Stack on port 1885.
+      # Host-side tools keep using http://localhost:1885 from .env.
+      - TTN_BASE_URL=http://host.docker.internal:1885
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
       interval: 30s

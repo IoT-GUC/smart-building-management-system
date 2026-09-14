@@ -11,8 +11,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.config import settings
+from app.config import Settings
 from app.services.lorawan_identity import dev_eui_namespace_mask, normalize_hex
+
+settings = Settings(_env_file=PROJECT_ROOT / ".env")
 
 
 def byte_list(hex_value: str, *, reverse: bool = False) -> list[str]:
@@ -25,7 +27,9 @@ def byte_list(hex_value: str, *, reverse: bool = False) -> list[str]:
 def wrap(values: list[str], indent: str = "    ") -> str:
     lines = []
     for index in range(0, len(values), 8):
-        suffix = " \\" if index + 8 < len(values) else ""
+        # Keep both the C initializer comma and the preprocessor line
+        # continuation when a value spans more than one generated line.
+        suffix = ", \\" if index + 8 < len(values) else ""
         lines.append(indent + ", ".join(values[index : index + 8]) + suffix)
     return "\n".join(lines)
 
@@ -61,7 +65,12 @@ def main() -> int:
             "#define SBMS_DEV_EUI_XOR_LSB_BYTES \\\n"
             f"{wrap(byte_list(namespace_mask, reverse=True))}\n"
         )
-        target = PROJECT_ROOT / "firmware" / "lorawan_credentials.h"
+        target = (
+            PROJECT_ROOT
+            / "firmware"
+            / "lilygo_cayenne_lpp_node"
+            / "lorawan_credentials.h"
+        )
         target.write_text(content, encoding="utf-8")
         print(f"Generated {target}")
         return 0

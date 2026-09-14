@@ -40,6 +40,9 @@ The active names include `DB_FILE`, TTN settings, `TB_USERNAME`, `TB_PASSWORD`,
 
 Two settings gate real security behaviour:
 
+- **The development TTN is local.** Host-side tools use
+  `http://localhost:1885`; Docker Compose routes the application container to
+  the same stack through `http://host.docker.internal:1885`.
 - **`TTN_WEBHOOK_SECRET` is required.** `/ttn-webhook` returns 503 to every
   request while it is empty. Set the same value in the TTN webhook's
   `X-Webhook-Secret` header.
@@ -68,7 +71,8 @@ device placement is rejected.
 
 Every board uses the configured `JOIN_EUI` and `LORAWAN_APP_KEY`. Its unique
 DevEUI is derived deterministically from the TTN application ID and ESP32 MAC
-using the same transformation in `firmware/lilygo_cayenne_lpp_node.ino`. The
+using the same transformation in
+`firmware/lilygo_cayenne_lpp_node/lilygo_cayenne_lpp_node.ino`. The
 application namespace prevents the same board from colliding with an older TTN
 application registration.
 
@@ -196,6 +200,11 @@ Required environment variables (set in `.env`, loaded via `env_file` in
 - `DB_FILE` (already set to `/app/data/smarthome.db` by `docker-compose.yml`)
 - `COOKIE_SECURE=true` for any deployment served over HTTPS
 
+For this local Docker setup, configure the TTN webhook with base URL
+`http://host.docker.internal:8000`, uplink path `/ttn-webhook`, and the
+`X-Webhook-Secret` header. A public URL is not required while both services run
+on this Docker Desktop host.
+
 > **Telemetry ingestion is dead until you set `TTN_WEBHOOK_SECRET`.**
 > `.env.example` ships this blank on purpose. While it is empty, `/ttn-webhook`
 > fails closed and returns `503` to every request, so **no LoRaWAN telemetry
@@ -219,7 +228,7 @@ pip install -r requirements-dev.txt
 ```bash
 python -m compileall -q app tests tools
 pytest -q
-ruff check app tests tools/register_ttn_devices.py tools/hardware_acceptance.py tools/generate_lorawan_credentials.py tools/reconcile_legacy_database.py tools/sync_ttn_credentials.py
+ruff check app tests tools/register_ttn_devices.py tools/hardware_acceptance.py tools/generate_lorawan_credentials.py tools/configure_local_ttn.py tools/reconcile_legacy_database.py tools/sync_ttn_credentials.py
 docker compose config --quiet
 ```
 
