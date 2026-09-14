@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     LORAWAN_VERSION: str = "MAC_V1_0_3"
     LORAWAN_PHY_VERSION: str = "PHY_V1_0_3_REV_A"
     TTN_WEBHOOK_SECRET: str = ""
+    # The address the LoRaWAN cluster uses to identify its own Join, Network
+    # and Application servers when a device is registered. On TTN's cloud this
+    # is the same host the API is reached at, so leaving this blank derives it
+    # from TTN_BASE_URL. A self-hosted stack reached through a different name
+    # -- host.docker.internal from a container, say, while the stack calls
+    # itself localhost -- rejects registration with
+    # network_server_address_mismatch unless this names what the stack expects.
+    TTN_CLUSTER_ADDRESS: str = ""
 
     THINGSBOARD_URL: str = "http://localhost:8080"
     TB_USERNAME: str = "tenant@thingsboard.org"

@@ -20,7 +20,11 @@ class TTNClient:
         self.base_url = settings.TTN_BASE_URL.rstrip("/")
         self.app_id = settings.TTN_APP_ID
         self.api_key = settings.TTN_API_KEY
-        self.host = self.base_url.replace("https://", "").replace("http://", "")
+        # Where we connect. Not necessarily what the cluster calls itself.
+        self.host = (
+            settings.TTN_CLUSTER_ADDRESS.strip()
+            or self.base_url.replace("https://", "").replace("http://", "")
+        )
 
     def get_headers(self) -> dict[str, str]:
         return {
