@@ -25,3 +25,6 @@ firmware/lilygo_cayenne_lpp_node/lorawan_credentials.h
 # stay tracked; this only stops new uploads being committed by accident.
 uploads/*
 !uploads/.gitkeep
+
+# Compiled firmware. Reproducible from the sketch with tools/node_firmware.sh.
+build/

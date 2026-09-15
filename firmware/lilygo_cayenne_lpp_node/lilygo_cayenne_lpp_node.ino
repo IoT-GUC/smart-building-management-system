@@ -169,8 +169,11 @@ static uint16_t uplinksSinceNickname = 0;
 #define OLED_WIDTH   128
 #define OLED_HEIGHT   64
 #define OLED_ADDRESS 0x3C  // Standard address for the TTGO onboard SSD1306
-#define OLED_SDA       21  // ESP32 default I2C pins, which this board uses
-#define OLED_SCL       22
+// Prefixed, because the board variant defines OLED_SDA/OLED_SCL itself and
+// redefining those produces a warning and depends on include order. The V2.1
+// variant happens to agree with these values; the V1 variant uses 4 and 15.
+#define SBMS_OLED_SDA  21
+#define SBMS_OLED_SCL  22
 #define OLED_RESET     -1  // No dedicated reset line on this board
 
 #if ENABLE_OLED
@@ -466,8 +469,10 @@ static void handleProvisionSave() {
             "device is joining the network. You can disconnect.</p></body>";
     provisioningServer.send(200, "text/html", done);
 
-    // Let the phone actually receive the page before the radio goes away.
-    provisioningServer.client().flush();
+    // Give the phone time to actually receive the page before the radio goes
+    // away. Deliberately not client().flush(): on this core that discards the
+    // receive buffer rather than waiting for the response to be sent, which is
+    // the opposite of what is needed here.
     delay(1200);
     provisioningComplete = true;
 }
@@ -896,7 +901,7 @@ void setup() {
 #if ENABLE_OLED
     // Bring the screen up before anything else can fail, so a fatal error in
     // setup() is visible without a serial cable attached.
-    Wire.begin(OLED_SDA, OLED_SCL);
+    Wire.begin(SBMS_OLED_SDA, SBMS_OLED_SCL);
     oledReady = display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS,
                               /*reset=*/true, /*periphBegin=*/false);
     if (!oledReady) {
