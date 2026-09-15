@@ -12,18 +12,28 @@
  * ------
  *   AJ-SR04M          TTGO LoRa32 V2.1
  *   --------          ----------------
- *   VCC        ->     5V          (the module is a 5V part; 3.3V under-ranges
- *                                  or fails outright)
+ *   VCC        ->     3.3V first, 5V only if that fails - see below
  *   GND        ->     GND
  *   Trig       ->     GPIO 4
  *   Echo       ->     GPIO 34  THROUGH A DIVIDER - see below
  *
- * THE ECHO PIN NEEDS A VOLTAGE DIVIDER
- * ------------------------------------
- * Echo idles low and pulses to VCC, so with a 5V supply it presents 5V to the
- * ESP32. ESP32 GPIOs are NOT 5V tolerant. It often appears to work, because
- * the input protection diodes conduct, but it is out of spec and degrades the
- * pin. Two resistors fix it:
+ * TRY 3.3V FIRST
+ * --------------
+ * Echo idles low and pulses up to whatever VCC is. Powered from 3.3V, it
+ * drives a safe 3.3V logic level and no divider is needed at all.
+ *
+ * These modules vary: many AJ-SR04M and JSN-SR04T units run anywhere from 3.0V
+ * to 5.5V, while some are specified for 5V only. If 3.3V gives sensible
+ * readings, stop here. If it reports NO ECHO or nonsense, it needs 5V, and
+ * then the divider below is required.
+ *
+ * IF IT NEEDS 5V, THE ECHO PIN NEEDS A VOLTAGE DIVIDER
+ * ----------------------------------------------------
+ * ESP32 GPIOs are NOT 5V tolerant: the absolute maximum input is about
+ * VDD + 0.3V. Feeding 5V in usually appears to work, because the pin's
+ * protection diode clamps the excess into the 3.3V rail -- which is precisely
+ * why this gets skipped. The damage is cumulative rather than immediate.
+ * Two resistors remove the question:
  *
  *     Echo ----[ 1k ]----+---- GPIO 34
  *                        |
@@ -32,7 +42,9 @@
  *                       GND
  *
  * That divides 5V down to 5 * 2/(1+2) = 3.3V. Any pair in the same ratio works
- * (10k/20k is common and draws less current).
+ * (10k/20k is common and draws less current). With only one resistor to hand,
+ * a single 1k in series is a real improvement over bare wire, because it
+ * limits the current through the protection diode.
  *
  * Trig is driven BY the ESP32 at 3.3V, which the module accepts, so it needs
  * no divider.
