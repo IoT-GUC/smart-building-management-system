@@ -32,6 +32,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <Preferences.h>
+#include <WebServer.h>
 
 // Optional: Adafruit SHT31 (I2C SDA=21, SCL=22)
 // #include <Adafruit_SHT31.h>
@@ -136,6 +137,20 @@ CayenneLPP lpp(51); // 51 bytes buffer
 // Re-send the nickname periodically so a single missed uplink is not permanent.
 // The cloud ignores an unchanged one, so this costs nothing but airtime.
 #define NICKNAME_REFRESH_UPLINKS 60
+
+// Length of the generated access-point password shown on the OLED. WPA2
+// requires at least 8 characters.
+#define PROVISION_PASSWORD_LENGTH 8
+
+// The BOOT button, used to forget the nickname and reopen the portal so a
+// board can be renamed in the field without a cable.
+//
+// It is checked for a hold shortly AFTER boot, never through a reset: GPIO0 is
+// the ESP32's bootstrap pin, and holding it low through reset puts the chip
+// into flash-download mode instead of running this sketch at all.
+#define PIN_RESET_NICKNAME 0
+#define RENAME_HOLD_MS     2000
+#define RENAME_WINDOW_MS   4000
 
 Preferences preferences;
 static char nickname[NICKNAME_MAX_LENGTH + 1] = "";
@@ -302,6 +317,262 @@ void pollSerialConsole() {
         }
         saveNickname(argument);
     }
+}
+
+// ==============================================================================
+// PROVISIONING PORTAL
+// ==============================================================================
+// A board is flashed in one place and installed in another, by somebody
+// carrying only a phone. Until it has been named it stays here: it does not
+// join, so it never appears in the cloud as an anonymous device and never
+// consumes an enrollment slot. Naming it is what commissions it.
+//
+// The access point is named after the last four characters of this board's
+// DevEUI, and the OLED shows the same four, so an installer standing in front
+// of thirty powered-up boards can tell which network belongs to the one in
+// their hand.
+
+WebServer provisioningServer(80);
+static char apSsid[20] = "";
+static char apPassword[PROVISION_PASSWORD_LENGTH + 1] = "";
+static bool provisioningComplete = false;
+
+// Deliberately excludes characters that are easy to misread off a small
+// screen: no O/0, no I/l/1.
+static const char PROVISION_PASSWORD_ALPHABET[] =
+    "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+
+static void buildAccessPointCredentials() {
+    // DEVEUI is stored little-endian, so index 0 holds the last displayed byte.
+    snprintf(apSsid, sizeof(apSsid), "SBMS-%02X%02X", DEVEUI[1], DEVEUI[0]);
+
+    const size_t alphabet = sizeof(PROVISION_PASSWORD_ALPHABET) - 1;
+    for (int i = 0; i < PROVISION_PASSWORD_LENGTH; i++) {
+        apPassword[i] = PROVISION_PASSWORD_ALPHABET[esp_random() % alphabet];
+    }
+    apPassword[PROVISION_PASSWORD_LENGTH] = 0;
+}
+
+#if ENABLE_OLED
+static void renderProvisioningScreen(const char* note) {
+    if (!oledReady) return;
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+
+    display.setCursor(0, 0);
+    display.println(F("SETUP - NAME ME"));
+    display.drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+
+    display.setCursor(0, 14);
+    display.print(F("WiFi "));
+    display.println(apSsid);
+
+    display.setCursor(0, 24);
+    display.print(F("Pass "));
+    display.println(apPassword);
+
+    display.setCursor(0, 34);
+    display.println(F("Open 192.168.4.1"));
+
+    display.drawFastHLine(0, 45, OLED_WIDTH, SSD1306_WHITE);
+    display.setCursor(0, 49);
+    display.println(note);
+    display.display();
+}
+#endif
+
+// Mirrors the character set the cloud accepts, so a nickname that is typed
+// here cannot be silently dropped later by the server's own validation.
+static bool nicknameIsAcceptable(const String& value) {
+    if (!value.length() || value.length() > NICKNAME_MAX_LENGTH) return false;
+    for (unsigned int i = 0; i < value.length(); i++) {
+        char c = value[i];
+        bool ok = isalnum((unsigned char)c) || c == ' ' || c == '_' ||
+                  c == '.' || c == '-' || c == '/' || c == '#';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+static const char PROVISION_PAGE[] PROGMEM = R"rawliteral(
+<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Name this device</title><style>
+body{font-family:system-ui,sans-serif;margin:0;padding:24px;background:#0f172a;color:#e2e8f0}
+h1{font-size:20px;margin:0 0 4px}p{color:#94a3b8;font-size:14px;margin:0 0 20px}
+label{display:block;font-size:13px;margin-bottom:6px;color:#cbd5e1}
+input{width:100%;box-sizing:border-box;padding:14px;font-size:17px;border-radius:8px;
+border:1px solid #334155;background:#1e293b;color:#f1f5f9}
+button{width:100%;margin-top:16px;padding:16px;font-size:17px;font-weight:600;
+border:0;border-radius:8px;background:#2563eb;color:#fff}
+button:disabled{background:#475569}
+.eui{margin-top:20px;font-size:12px;color:#64748b}
+.err{color:#f87171;font-size:13px;margin-top:8px;min-height:18px}
+</style></head><body>
+<h1>Name this device</h1>
+<p>It will not join the network until you confirm.</p>
+<form method="POST" action="/save" onsubmit="return check()">
+<label for="n">Nickname</label>
+<input id="n" name="nickname" autocomplete="off" autocapitalize="none"
+       maxlength="48" placeholder="temp_c_floor3_308" required>
+<div class="err" id="e"></div>
+<button type="submit" id="b">Confirm</button>
+</form>
+<div class="eui">Device __EUI__</div>
+<script>
+function check(){
+  var v=document.getElementById('n').value.trim();
+  if(!/^[A-Za-z0-9 _.\-\/#]+$/.test(v)){
+    document.getElementById('e').textContent='Use letters, numbers, space _ . - / # only';
+    return false;
+  }
+  document.getElementById('b').disabled=true;
+  document.getElementById('b').textContent='Saving...';
+  return true;
+}
+</script></body></html>
+)rawliteral";
+
+static void handleProvisionRoot() {
+    String page = FPSTR(PROVISION_PAGE);
+    char eui[17];
+    for (int i = 0; i < 8; i++) snprintf(&eui[i * 2], 3, "%02X", DEVEUI[7 - i]);
+    page.replace("__EUI__", eui);
+    provisioningServer.send(200, "text/html", page);
+}
+
+static void handleProvisionSave() {
+    String value = provisioningServer.arg("nickname");
+    value.trim();
+
+    if (!nicknameIsAcceptable(value)) {
+        provisioningServer.send(400, "text/html",
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<body style='font-family:system-ui;padding:24px;background:#0f172a;color:#f87171'>"
+            "<h2>Rejected</h2><p>Use letters, numbers, space _ . - / # only, "
+            "up to 48 characters.</p><a style='color:#60a5fa' href='/'>Back</a></body>");
+        return;
+    }
+
+    saveNickname(value);
+
+    String done = String(
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<body style='font-family:system-ui;padding:24px;background:#0f172a;color:#e2e8f0'>"
+        "<h2 style='color:#4ade80'>Saved</h2><p>This device is now named<br><b>");
+    done += value;
+    done += "</b></p><p style='color:#94a3b8'>Wi-Fi is shutting down and the "
+            "device is joining the network. You can disconnect.</p></body>";
+    provisioningServer.send(200, "text/html", done);
+
+    // Let the phone actually receive the page before the radio goes away.
+    provisioningServer.client().flush();
+    delay(1200);
+    provisioningComplete = true;
+}
+
+// Blocks until the board has been named. That is the point: an unnamed board
+// must not reach the network.
+void runProvisioningPortal() {
+    buildAccessPointCredentials();
+
+    Serial.println(F("[SETUP] No nickname stored. Starting provisioning portal."));
+    Serial.print(F("[SETUP] SSID: "));
+    Serial.print(apSsid);
+    Serial.print(F("  Password: "));
+    Serial.println(apPassword);
+    Serial.println(F("[SETUP] Connect, then open http://192.168.4.1"));
+
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(apSsid, apPassword);
+    delay(300);
+
+#if ENABLE_OLED
+    renderProvisioningScreen("Waiting...");
+#endif
+
+    provisioningServer.on("/", HTTP_GET, handleProvisionRoot);
+    provisioningServer.on("/save", HTTP_POST, handleProvisionSave);
+    // Phones probe these to decide whether a network has internet. Answering
+    // with the form is what makes the page pop up on its own.
+    provisioningServer.onNotFound(handleProvisionRoot);
+    provisioningServer.begin();
+
+    unsigned long lastScreen = 0;
+    while (!provisioningComplete) {
+        provisioningServer.handleClient();
+        // Serial remains available throughout, so a bench operator can still
+        // type "nick <name>" instead of using the portal.
+        pollSerialConsole();
+        if (strlen(nickname)) break;
+
+        if (millis() - lastScreen > 2000) {
+            lastScreen = millis();
+#if ENABLE_OLED
+            char note[22];
+            snprintf(note, sizeof(note), "%u client%s",
+                     WiFi.softAPgetStationNum(),
+                     WiFi.softAPgetStationNum() == 1 ? "" : "s");
+            renderProvisioningScreen(note);
+#endif
+        }
+        delay(10);
+    }
+
+    provisioningServer.stop();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_OFF);
+    Serial.print(F("[SETUP] Named '"));
+    Serial.print(nickname);
+    Serial.println(F("'. Wi-Fi off, joining LoRaWAN."));
+
+#if ENABLE_OLED
+    if (oledReady) {
+        display.clearDisplay();
+        display.setCursor(0, 0);
+        display.println(F("SAVED"));
+        display.drawFastHLine(0, 10, OLED_WIDTH, SSD1306_WHITE);
+        display.setCursor(0, 16);
+        display.println(nickname);
+        display.setCursor(0, 40);
+        display.println(F("WiFi off."));
+        display.println(F("Joining LoRaWAN..."));
+        display.display();
+    }
+#endif
+    delay(1500);
+}
+
+
+// Watch the BOOT button for a sustained press in the first few seconds of
+// running. Returns true if it was held long enough to mean "rename me".
+static bool renameRequested() {
+    unsigned long start = millis();
+    unsigned long heldSince = 0;
+
+#if ENABLE_OLED
+    if (oledReady) {
+        display.clearDisplay();
+        display.setCursor(0, 0);
+        display.println(F("SBMS LoRaWAN Node"));
+        display.setCursor(0, 24);
+        display.println(F("Hold BOOT 2s"));
+        display.println(F("to rename."));
+        display.display();
+    }
+#endif
+
+    while (millis() - start < RENAME_WINDOW_MS) {
+        if (digitalRead(PIN_RESET_NICKNAME) == LOW) {
+            if (!heldSince) heldSince = millis();
+            if (millis() - heldSince >= RENAME_HOLD_MS) return true;
+        } else {
+            heldSince = 0;
+        }
+        delay(20);
+    }
+    return false;
 }
 
 // A small bounded random walk. Simulated values drift like a real sensor
@@ -642,25 +913,40 @@ void setup() {
     }
 #endif
 
-    // Disable Wi-Fi and Bluetooth radios completely to conserve battery
-    WiFi.mode(WIFI_OFF);
+    // Bluetooth is never used. Wi-Fi is left alone for now: it is needed if
+    // this board still has to be named, and is switched off immediately after.
     btStop();
-    Serial.println(F("[INFO] Wi-Fi & Bluetooth turned OFF (Pure LoRa Mode)"));
 
     pinMode(PIN_PIR_MOTION, INPUT_PULLDOWN);
+    pinMode(PIN_RESET_NICKNAME, INPUT_PULLUP);
 
     // Seed the PRNG from the hardware RNG so simulated readings are not
     // identical on every boot.
     randomSeed(esp_random());
 
-    loadNickname();
-
-    // Initialize Unique Hardware DevEUI from ESP32 MAC
+    // The DevEUI names the provisioning access point, so it has to exist
+    // before the portal can start.
     if (!initUniqueDevEUI()) {
         while (true) {
             delay(1000);
         }
     }
+
+    loadNickname();
+    if (strlen(nickname) && renameRequested()) {
+        Serial.println(F("[SETUP] BOOT held: forgetting nickname."));
+        saveNickname("-");
+    }
+
+    // An unnamed board stops here. It does not join, so it never reaches the
+    // cloud as an anonymous device and never consumes an enrollment slot --
+    // naming it is what commissions it.
+    if (!strlen(nickname)) {
+        runProvisioningPortal();
+    }
+
+    WiFi.mode(WIFI_OFF);
+    Serial.println(F("[INFO] Wi-Fi & Bluetooth off (Pure LoRa Mode)"));
 
     // Initialize the radio bus explicitly. The TTGO LoRa32 does not use the
     // ESP32 default VSPI MISO/MOSI mapping.
