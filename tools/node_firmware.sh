@@ -14,6 +14,10 @@
 #   ./tools/node_firmware.sh monitor COM14      serial console (nick command)
 #   ./tools/node_firmware.sh all COM14          build, flash, then monitor
 #
+# Set SKETCH to work on a different sketch in firmware/:
+#
+#   SKETCH=aj_sr04m_test ./tools/node_firmware.sh all COM68
+#
 # Requires arduino-cli. The ESP32 core and the four libraries are shared with
 # the Arduino IDE's own installation, so nothing is downloaded twice.
 
@@ -22,8 +26,11 @@ set -euo pipefail
 # The bare ttgo-lora32 FQBN builds for the V1 board, whose OLED sits on
 # different pins. These boards are the V2.1 (1.6.1) revision.
 FQBN="esp32:esp32:ttgo-lora32:Revision=TTGO_LoRa32_v21new"
-SKETCH="firmware/lilygo_cayenne_lpp_node"
-BUILD_DIR="build/firmware"
+# Which sketch to work on. The node firmware by default; SKETCH=aj_sr04m_test
+# selects the ultrasonic bench test, which shares the same board and toolchain.
+SKETCH_NAME="${SKETCH:-lilygo_cayenne_lpp_node}"
+SKETCH="firmware/$SKETCH_NAME"
+BUILD_DIR="build/$SKETCH_NAME"
 BAUD=115200
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,6 +55,7 @@ require_port() {
 
 cmd_build() {
     echo "Compiling $SKETCH for $FQBN..."
+    [ -d "$SKETCH" ] || { echo "No such sketch: $SKETCH" >&2; exit 1; }
     arduino-cli compile --fqbn "$FQBN" --output-dir "$BUILD_DIR" "$SKETCH"
     echo
     echo "Built into $BUILD_DIR. Flash any number of boards from it with:"
