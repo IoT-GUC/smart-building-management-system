@@ -19,6 +19,7 @@ Thumbs.db
 .env
 firmware/lorawan_credentials.h
 firmware/lilygo_cayenne_lpp_node/lorawan_credentials.h
+firmware/espcam_lorawan_node/lorawan_credentials.h
 .docker-local-ca.cer
 
 # Runtime-uploaded floorplan/site images. Existing committed demo assets

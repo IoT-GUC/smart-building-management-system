@@ -65,14 +65,17 @@ def main() -> int:
             "#define SBMS_DEV_EUI_XOR_LSB_BYTES \\\n"
             f"{wrap(byte_list(namespace_mask, reverse=True))}\n"
         )
-        target = (
-            PROJECT_ROOT
-            / "firmware"
-            / "lilygo_cayenne_lpp_node"
-            / "lorawan_credentials.h"
-        )
-        target.write_text(content, encoding="utf-8")
-        print(f"Generated {target}")
+        # Arduino sketch folders are self-contained, so every sketch that joins
+        # the network needs its own copy of the header rather than a shared one.
+        # Each is gitignored.
+        for sketch in ("lilygo_cayenne_lpp_node", "espcam_lorawan_node"):
+            target = (
+                PROJECT_ROOT / "firmware" / sketch / "lorawan_credentials.h"
+            )
+            if not target.parent.is_dir():
+                continue
+            target.write_text(content, encoding="utf-8")
+            print(f"Generated {target}")
         return 0
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
