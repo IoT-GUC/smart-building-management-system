@@ -827,22 +827,32 @@ void loop() {
  *
  *   var status = b[0];
  *
- *   // The recognized text is ASCII from the camera's own character set, so a
+ *   // The camera's output is ASCII from its own character set, so a
  *   // byte-per-character read is correct here.
  *   var text = "";
  *   for (var i = 1; i < b.length; i++) {
  *     text += String.fromCharCode(b[i]);
  *   }
  *
- *   return {
- *     data: {
- *       cam_locked:      (status & 0x01) !== 0,
- *       cam_segmented:   (status & 0x02) !== 0,
- *       cam_recognized:  (status & 0x04) !== 0,
- *       cam_streaming:   (status & 0x08) !== 0,
- *       recognized_text: text
- *     }
+ *   var out = {
+ *     cam_locked:       (status & 0x01) !== 0,
+ *     cam_segmented:    (status & 0x02) !== 0,
+ *     cam_recognized:   (status & 0x04) !== 0,
+ *     cam_streaming:    (status & 0x08) !== 0,
+ *     cam_reading_text: text
  *   };
+ *
+ *   // Readings off a meter panel are numbers, and a number is worth far
+ *   // more than a string: it can be graphed, and an alarm rule can
+ *   // compare it. The text is kept alongside it regardless, because OCR
+ *   // does not always return something numeric and the raw read is what
+ *   // tells you so.
+ *   var value = parseFloat(text);
+ *   if (text.length && isFinite(value)) {
+ *     out.cam_reading = value;
+ *   }
+ *
+ *   return { data: out };
  * }
  *
  * The nickname on port 10 is deliberately NOT decoded here: the cloud reads

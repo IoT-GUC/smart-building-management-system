@@ -82,5 +82,14 @@ class Settings(BaseSettings):
     # TTN_API_KEY, which works only if that key happens to be gateway-scoped.
     AUTO_ENROLLMENT_GATEWAY_API_KEY: str = ""
 
+    # A decoded uplink is self-describing, and the webhook already stores
+    # every named value it carries. Learning registers a field the first
+    # time it is seen so it also gets a label, display order and something
+    # an alarm rule can point at -- which is what a profile adds over raw
+    # storage. Learned fields are always optional and nullable, so no
+    # existing device can be invalidated by one, and a profile stops
+    # learning at the cap in app/services/profile_learning.py.
+    PROFILE_FIELD_LEARNING_ENABLED: bool = True
+
 
 settings = Settings()

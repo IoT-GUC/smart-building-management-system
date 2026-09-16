@@ -39,6 +39,7 @@ from app.services.device_label import (
 )
 from app.services.device_state import build_device_state
 from app.services.export_safety import redact_secrets
+from app.services.profile_learning import plan_learned_fields
 from app.services.thingsboard import tb_client
 from app.services.ttn import ttn_client
 from app.services.websockets import manager
@@ -4122,6 +4123,79 @@ def apply_device_label_uplink(conn, device: dict, frm_payload) -> dict:
         'label': label, 'telemetry_stored': False, 'thingsboard_sent': False}
 
 
+def learn_profile_fields(conn: sqlite3.Connection, profile: dict,
+    telemetry: dict) -> list:
+    """
+    Declare fields this profile has not met before.
+
+    A decoded uplink names its own values and they are stored either way,
+    so this is about what a declared field adds around the value: a
+    readable label instead of a raw key, display order, and a target for
+    an alarm rule. Doing it on first sight means a new kind of device is
+    usable without anyone authoring a profile by hand.
+
+    Never fatal. A device reporting telemetry matters more than the
+    profile catching up with it, so any failure is logged and the uplink
+    carries on being processed.
+    """
+    if not settings.PROFILE_FIELD_LEARNING_ENABLED:
+        return []
+    profile_id = profile.get('id')
+    if not profile_id or not telemetry:
+        return []
+
+    try:
+        declared = {str(row['field_key']).strip().lower()
+            for row in conn.execute(
+                'SELECT field_key FROM sensor_profile_fields'
+                ' WHERE profile_id = ?', (profile_id,))}
+        already_learned = conn.execute(
+            'SELECT COUNT(*) FROM sensor_profile_fields'
+            ' WHERE profile_id = ? AND auto_learned = 1',
+            (profile_id,)).fetchone()[0]
+
+        planned = plan_learned_fields(telemetry, declared,
+            already_learned=already_learned)
+        if not planned:
+            return []
+
+        next_order = conn.execute(
+            'SELECT COALESCE(MAX(display_order), 0)'
+            ' FROM sensor_profile_fields WHERE profile_id = ?',
+            (profile_id,)).fetchone()[0]
+
+        added = []
+        for offset, field in enumerate(planned, start=1):
+            conn.execute(
+                """
+                INSERT INTO sensor_profile_fields (
+                    profile_id, field_key, label, data_type,
+                    payload_order, required, nullable, display_order,
+                    visible_floor, visible_dashboard, auto_learned
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """
+                , (profile_id, field['field_key'], field['label'],
+                field['data_type'], next_order + offset,
+                field['required'], field['nullable'], next_order + offset,
+                field['visible_floor'], field['visible_dashboard']))
+            added.append(field['field_key'])
+        conn.commit()
+
+        log_audit_event(conn, action='profile_fields_learned',
+            target_type='sensor_profile',
+            target_id=str(profile.get('profile_code') or profile_id),
+            actor='uplink', details={'fields': added})
+        logger.info('Profile %s learned new fields: %s',
+            profile.get('profile_code'), ', '.join(added))
+        return added
+    except Exception as exc:
+        logger.info('Profile field learning skipped: %s', exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+
 def auto_provision_discovered_device(conn: sqlite3.Connection, device_id: str, raw_envelope: dict | None = None) -> dict:
     """
     Zero-touch auto-provisioning for newly detected LoRaWAN devices.
@@ -5210,6 +5284,7 @@ def process_ttn_webhook_background(data: dict):
             'capabilities', []))
         validation = validate_decoded_payload_against_profile(profile,
             decoded_payload)
+        learn_profile_fields(conn, profile, validation.get('telemetry') or {})
         if not validation['valid']:
             logger.info('Profile telemetry validation rejected: %s', validation[
                 'errors'])
