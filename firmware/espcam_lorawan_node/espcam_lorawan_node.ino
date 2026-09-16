@@ -179,7 +179,18 @@ static const char PROVISION_PASSWORD_ALPHABET[] =
 #define CMD_SET_PANEL_THRESH  9
 
 #define BUF_SIZE      9600
+
+// Must match MAX_RECOGNIZED_CHARS in the camera firmware.
 #define TEXT_MAX_LEN  48
+
+// Status bits the camera sets. Bit 4 marks a mask-preview frame, and the
+// camera writes the status byte as a bare 0x10 in that case rather than
+// OR-ing it in, so bits 0-3 are all clear and the frame carries no reading.
+#define CAM_STATUS_LOCKED        0x01
+#define CAM_STATUS_SEGMENTED     0x02
+#define CAM_STATUS_RECOGNIZED    0x04
+#define CAM_STATUS_STREAMING     0x08
+#define CAM_STATUS_MASK_PREVIEW  0x10
 
 static uint8_t  frameBuf[BUF_SIZE];
 static uint16_t frameW = 0, frameH = 0;
@@ -222,8 +233,16 @@ static void commitFrame(uint8_t textLen) {
     frameReady = true;
     portEXIT_CRITICAL(&frameMux);
 
+    // A mask-preview frame carries no reading at all -- the camera writes the
+    // status byte as a bare 0x10 and sends textLen 0 -- so it is never worth an
+    // uplink. It only occurs while searching with the mask view on, which is a
+    // calibration activity, but the check costs nothing and keeps a stray one
+    // from spending airtime.
+    if (frameStatus & CAM_STATUS_MASK_PREVIEW) return;
+
     // Only a change is worth the airtime. Everything else is the camera doing
-    // its job at a rate the radio cannot match.
+    // its job at a rate the radio cannot match: it free-runs a frame roughly
+    // every 800 ms.
     if (frameStatus != lastSentStatus) statusUplinkPending = true;
     if (strncmp(frameText, lastSentText, TEXT_MAX_LEN) != 0) textUplinkPending = true;
 }
@@ -827,8 +846,9 @@ void loop() {
  *
  *   var status = b[0];
  *
- *   // The camera's output is ASCII from its own character set, so a
- *   // byte-per-character read is correct here.
+ *   // The camera emits digits, '.', '?' for a glyph it could not read,
+ *   // and '
+' between the rows of a multi-row panel. Nothing else.
  *   var text = "";
  *   for (var i = 1; i < b.length; i++) {
  *     text += String.fromCharCode(b[i]);
@@ -839,18 +859,39 @@ void loop() {
  *     cam_segmented:    (status & 0x02) !== 0,
  *     cam_recognized:   (status & 0x04) !== 0,
  *     cam_streaming:    (status & 0x08) !== 0,
+ *     // Bit 4 is a mask-preview frame. The camera writes the status byte
+ *     // as a bare 0x10 in that case, so bits 0-3 are all clear and the
+ *     // frame carries no reading at all.
+ *     cam_mask_preview: (status & 0x10) !== 0,
  *     cam_reading_text: text
  *   };
  *
- *   // Readings off a meter panel are numbers, and a number is worth far
- *   // more than a string: it can be graphed, and an alarm rule can
- *   // compare it. The text is kept alongside it regardless, because OCR
- *   // does not always return something numeric and the raw read is what
- *   // tells you so.
- *   var value = parseFloat(text);
- *   if (text.length && isFinite(value)) {
- *     out.cam_reading = value;
+ *   // A multi-row panel arrives as two independent readings joined by a
+ *   // newline, so there is no single number to report for one.
+ *   var rows = text.split("
+").filter(function (r) { return r.length; });
+ *   out.cam_reading_rows = rows.length;
+ *
+ *   // Strict on purpose. The camera has no confidence threshold and marks
+ *   // a glyph it could not read with '?', and parseFloat stops at the
+ *   // first bad character rather than failing:
+ *   //
+ *   //     parseFloat('233?0.44')  ->  233
+ *   //
+ *   // One unreadable digit would otherwise become a number wrong by orders
+ *   // of magnitude that looks entirely plausible on a graph. A gap in the
+ *   // series is obvious; a wrong value is not. The raw text goes out
+ *   // either way, so nothing is lost by refusing to guess.
+ *   var numeric = rows.length === 1 && /^[0-9]+(\.[0-9]+)?$/.test(rows[0]);
+ *   out.cam_reading_ok = numeric;
+ *   if (numeric) {
+ *     out.cam_reading = parseFloat(rows[0]);
  *   }
+ *
+ *   // NOTE: cam_reading_ok means the string was well formed, NOT that the
+ *   // reading is correct. The classifier takes an unconditional argmax
+ *   // with no confidence threshold, so a misread digit arrives as a
+ *   // perfectly ordinary one with nothing to mark it.
  *
  *   return { data: out };
  * }
